@@ -1,0 +1,20 @@
+[package]
+name = "lsp-audio"
+description = "Real-time playback engine: cpal output, lock-free mixer, symphonia decode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+jack = ["cpal/jack"]
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+rtrb.workspace = true
+cpal.workspace = true
+symphonia.workspace = true
+
+[dev-dependencies]
+hound.workspace = true

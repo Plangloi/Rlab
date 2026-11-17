@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/lsp-core", "crates/lsp-audio", "crates/lsp-engine"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.75"
+
+[workspace.dependencies]
+anyhow = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+rtrb = "0.3"
+cpal = "0.15"
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac", "flac", "wav", "pcm", "vorbis", "ogg"] }
+rosc = "0.10"
+midir = "0.10"
+crossbeam-channel = "0.5"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+ctrlc = "3"
+hound = "3"
+
+lsp-core = { path = "crates/lsp-core" }
+lsp-audio = { path = "crates/lsp-audio" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

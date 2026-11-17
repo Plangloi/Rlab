@@ -1,0 +1,26 @@
+[package]
+name = "lsp-engine"
+description = "Headless show-control engine: cue sequencing + OSC/stdin control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lsp"
+path = "src/main.rs"
+
+[features]
+default = []
+jack = ["lsp-audio/jack"]
+
+[dependencies]
+lsp-core.workspace = true
+lsp-audio.workspace = true
+anyhow.workspace = true
+log.workspace = true
+rosc.workspace = true
+midir.workspace = true
+crossbeam-channel.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+ctrlc.workspace = true

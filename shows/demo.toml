@@ -1,0 +1,54 @@
+name = "Demo"
+
+[settings]
+osc_listen = "0.0.0.0:53000"
+panic_fade = 1.0
+# audio_device = "Scarlett"
+
+[[cue]]
+number = "1"
+name = "Preshow loop"
+type = "audio"
+file = "media/tone_440.wav"
+gain_db = -6
+fade_in = 0.5
+fade_out = 2.0
+loop = true
+
+[[cue]]
+number = "2"
+name = "Fade preshow to -20"
+type = "fade"
+target = "1"
+duration = 3
+gain_db = -20
+
+[[cue]]
+number = "3"
+name = "Sting + lights"
+type = "audio"
+file = "media/tone_660.wav"
+next = "auto_continue"
+post_wait = 0.0
+
+[[cue]]
+number = "3.1"
+name = "OSC to lighting desk"
+type = "osc"
+host = "127.0.0.1:8000"
+path = "/gma3/cmd"
+args = ["Go+ Sequence 1"]
+next = "auto_follow"
+
+[[cue]]
+number = "3.2"
+name = "MSC GO (disabled port example)"
+type = "wait"
+duration = 0.5
+
+[[cue]]
+number = "4"
+name = "Stop preshow"
+type = "stop"
+target = "1"
+fade = 3.0
