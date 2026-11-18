@@ -23,6 +23,8 @@ sudo apt install libasound2-dev pkg-config        # + libjack-jackd2-dev for --f
 cargo build --release
 ./target/release/lsp --list-devices
 ./target/release/lsp shows/demo.toml               # <enter> = GO
+./target/release/lsp                               # no show: waits for /lsp/load (or `load <path>` on stdin)
+./target/release/lsp shows/demo.toml --no-watch    # don't hot-reload on file change (e.g. during performance)
 ./target/release/lsp shows/demo.toml --host JACK --device system   # needs --features jack
 ```
 
@@ -36,6 +38,8 @@ cargo build --release
 | `/lsp/goto` | `cue` | set standby |
 | `/lsp/next` / `/lsp/prev` | – | move playhead |
 | `/lsp/status` | – | log standby + running |
+| `/lsp/load` | `path` | load a show file (path on the engine host) |
+| `/lsp/reload` | – | re-read the current show file |
 | `/lsp/subscribe` | `[reply_port]` | receive feedback (renew every <10 s) |
 | `/lsp/unsubscribe` | `[reply_port]` | stop feedback |
 | `/lsp/cuelist` | `[reply_port]` | re-send the cue list to the caller |
@@ -50,9 +54,10 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 
 | Address | Args |
 |---|---|
-| `/lsp/show` | `name:s count:i` |
+| `/lsp/show` | `name:s count:i path:s` |
 | `/lsp/cue` | `idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f` |
 | `/lsp/state` | `standby:i` then `[idx:i phase:s elapsed:f duration:f]` per active cue |
+| `/lsp/load` | `status:s path:s message:s` — `loading` · `ok` · `error` |
 
 `standby` = -1 at end of list. `duration` = -1 for looping audio. `phase` = `pre_wait` · `running` · `stopping`.
 
@@ -63,7 +68,17 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 cd ui/src-tauri && cargo run --release              # UI; --engine host:port or LSP_ENGINE to target a remote engine
 ```
 
-Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby. Keys: Space GO · Esc stop all · ↑↓ move standby. Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
+Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby, Open… / Reload with load status. Keys: Space GO · Esc stop all · ↑↓ move standby · ⌘O open · ⌘R reload. Open… sends the picked path to the engine, so it only works when the engine can see the same path (same machine / shared mount). Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
+
+## Show loading / hot reload
+
+- Loads run on a worker thread; running cues keep playing while media decodes.
+- Clips are cached by path + mtime: a reload only decodes media that changed.
+- The show file is polled every 500 ms and reloaded when it changes (`--no-watch` to disable).
+- A file that fails to parse is reported (`/lsp/load error`, with line/column) and the current show stays live.
+- Reloading the **same file** keeps running cues, matched by cue number (insert/renumber/edit freely); standby follows its cue number. Cues removed from the file fade out with their `fade_out`.
+- Loading a **different file** fades out everything running and resets standby to the first cue.
+- `osc_listen` / `audio_device` changes need an engine restart (logged as a warning).
 
 ## Cue types
 
@@ -83,7 +98,7 @@ See `shows/demo.toml`.
 - [x] OSC feedback (`/lsp/state` push to subscribers) for remote UIs
 - [ ] Multichannel routing (cue → output bus matrix), per-cue patch
 - [ ] LTC / MTC chase + timecode cues
-- [ ] Hot reload of show file, file watcher
+- [x] Show load over OSC, hot reload of show file, file watcher
 - [x] Tauri UI: cue list, GO, progress, stop/panic over OSC
 - [ ] UI: level meters, cue editing, show file open
 - [ ] Group cues, playlist mode, cue edit over OSC

@@ -2,16 +2,17 @@
 //! events in, timer heap for pre-wait / post-wait / durations.
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, RecvTimeoutError};
-use lsp_audio::{load_clip, AudioCmd, AudioEvent, AudioHandle, Clip, VoiceId};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use lsp_audio::{AudioCmd, AudioEvent, AudioHandle, VoiceId};
 use lsp_core::{db_to_lin, AudioCue, Command, CueKind, NextAction, Show};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::UdpSocket;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::feedback::{self, RunInfo, Subscribers};
+use crate::loader::{self, ClipCache, LoadResult, Loaded};
 use crate::{midi::MidiOut, osc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -60,9 +61,12 @@ struct RunState {
 
 pub struct Controller {
     show: Show,
+    /// File the current show came from (None = started empty).
+    show_path: Option<PathBuf>,
+    show_mtime: Option<SystemTime>,
     playhead: usize,
     audio: AudioHandle,
-    clips: HashMap<PathBuf, Clip>,
+    clips: ClipCache,
     voice_cue: HashMap<VoiceId, usize>,
     cue_voices: HashMap<usize, Vec<VoiceId>>,
     next_voice: VoiceId,
@@ -75,59 +79,38 @@ pub struct Controller {
     durations: Vec<f32>,
     dirty: bool,
     last_push: Instant,
+    /// Poll the show file's mtime and reload on change.
+    watch: bool,
+    last_watch: Instant,
+    loading: bool,
+    /// Load requested while another was in flight; runs when it finishes.
+    queued_load: Option<PathBuf>,
+    load_tx: Sender<LoadResult>,
+    load_rx: Receiver<LoadResult>,
 }
 
 const TICK: Duration = Duration::from_millis(5);
 /// Feedback rate while cues are running / while idle (heartbeat).
 const PUSH_ACTIVE: Duration = Duration::from_millis(50);
 const PUSH_IDLE: Duration = Duration::from_secs(1);
+const WATCH_EVERY: Duration = Duration::from_millis(500);
 
 impl Controller {
+    /// `loaded` = initial show (None → start empty and wait for `/lsp/load`).
     pub fn new(
-        show: Show,
-        base_dir: &Path,
+        loaded: Option<Loaded>,
         audio: AudioHandle,
         feedback_sock: UdpSocket,
+        watch: bool,
     ) -> Result<Self> {
-        for w in show.validate() {
-            log::warn!("show: {w}");
-        }
-        let mut clips = HashMap::new();
-        let t0 = Instant::now();
-        let mut show = show;
-        for cue in &mut show.cues {
-            if let CueKind::Audio(a) = &mut cue.kind {
-                if a.file.is_relative() {
-                    a.file = base_dir.join(&a.file);
-                }
-                if clips.contains_key(&a.file) {
-                    continue;
-                }
-                match load_clip(&a.file, audio.sample_rate) {
-                    Ok(c) => {
-                        clips.insert(a.file.clone(), c);
-                    }
-                    Err(e) => log::error!("cue {}: {e:#}", cue.number),
-                }
-            }
-        }
-        let mb: usize = clips.values().map(|c| c.len() * 4).sum::<usize>() >> 20;
-        log::info!(
-            "preloaded {} clips ({mb} MiB) in {:?}",
-            clips.len(),
-            t0.elapsed()
-        );
-
-        let sr = audio.sample_rate as f32;
-        let durations = feedback::durations(&show, |p| {
-            clips.get(p).map(|c| (c.len() / 2) as f32 / sr)
-        });
-
-        Ok(Self {
-            show,
+        let (load_tx, load_rx) = crossbeam_channel::unbounded();
+        let mut ctl = Self {
+            show: Show::empty(),
+            show_path: None,
+            show_mtime: None,
             playhead: 0,
             audio,
-            clips,
+            clips: ClipCache::new(),
             voice_cue: HashMap::new(),
             cue_voices: HashMap::new(),
             next_voice: 1,
@@ -137,10 +120,21 @@ impl Controller {
             midi: MidiOut::default(),
             subs: Subscribers::new(feedback_sock),
             states: HashMap::new(),
-            durations,
+            durations: Vec::new(),
             dirty: true,
             last_push: Instant::now(),
-        })
+            watch,
+            last_watch: Instant::now(),
+            loading: false,
+            queued_load: None,
+            load_tx,
+            load_rx,
+        };
+        match loaded {
+            Some(l) => ctl.apply_show(l),
+            None => log::info!("no show loaded — waiting for /lsp/load"),
+        }
+        Ok(ctl)
     }
 
     pub fn run(&mut self, rx: Receiver<Command>) {
@@ -162,6 +156,8 @@ impl Controller {
             }
             self.poll_audio();
             self.run_timers();
+            self.poll_loads();
+            self.watch_file();
             self.push_feedback();
         }
         self.audio.send(AudioCmd::FadeAll { frames: 0 });
@@ -214,6 +210,15 @@ impl Controller {
                 }
             }
             Command::CueList(addr) => self.send_cue_list(addr),
+            Command::Load(path) => self.start_load(path),
+            Command::Reload => match self.show_path.clone() {
+                Some(p) => self.start_load(p),
+                None => {
+                    log::warn!("reload: no show file loaded");
+                    self.subs
+                        .broadcast(feedback::load_status("error", "", "no show file loaded"));
+                }
+            },
             Command::Quit => {}
         }
     }
@@ -378,7 +383,7 @@ impl Controller {
 
     /// Returns true if a voice was started.
     fn play_audio(&mut self, idx: usize, a: &AudioCue) -> bool {
-        let Some(clip) = self.clips.get(&a.file).cloned() else {
+        let Some(clip) = self.clips.get(&a.file).map(|c| c.clip.clone()) else {
             log::error!(
                 "cue {}: clip not loaded ({})",
                 self.show.cues[idx].number,
@@ -454,10 +459,201 @@ impl Controller {
             .retain(|i, _| voices.contains_key(i) || pending.contains(i));
     }
 
+    fn cue_list(&self) -> Vec<rosc::OscMessage> {
+        let path = self
+            .show_path
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        feedback::cue_list(&self.show, &self.durations, &path)
+    }
+
     fn send_cue_list(&self, addr: std::net::SocketAddr) {
-        for m in feedback::cue_list(&self.show, &self.durations) {
+        for m in self.cue_list() {
             self.subs.send_to(addr, m);
         }
+    }
+
+    // ── Show loading ──────────────────────────────────────
+
+    fn start_load(&mut self, path: PathBuf) {
+        if self.loading {
+            self.queued_load = Some(path);
+            return;
+        }
+        log::info!("loading {}", path.display());
+        self.loading = true;
+        self.subs.broadcast(feedback::load_status(
+            "loading",
+            &path.display().to_string(),
+            "",
+        ));
+        loader::spawn(
+            path,
+            self.audio.sample_rate,
+            self.clips.clone(),
+            self.load_tx.clone(),
+        );
+    }
+
+    fn poll_loads(&mut self) {
+        while let Ok(res) = self.load_rx.try_recv() {
+            self.loading = false;
+            match res {
+                Ok(l) => self.apply_show(l),
+                Err((path, e)) => {
+                    log::error!("load {}: {e} (keeping current show)", path.display());
+                    self.subs.broadcast(feedback::load_status(
+                        "error",
+                        &path.display().to_string(),
+                        &e,
+                    ));
+                }
+            }
+            self.dirty = true;
+            if let Some(p) = self.queued_load.take() {
+                self.start_load(p);
+            }
+        }
+    }
+
+    fn watch_file(&mut self) {
+        if !self.watch || self.loading || self.last_watch.elapsed() < WATCH_EVERY {
+            return;
+        }
+        self.last_watch = Instant::now();
+        let Some(path) = self.show_path.clone() else {
+            return;
+        };
+        let m = loader::mtime(&path);
+        if m.is_some() && m != self.show_mtime {
+            // Record it now so a file that fails to parse isn't retried until it changes again.
+            self.show_mtime = m;
+            log::info!("show file changed");
+            self.start_load(path);
+        }
+    }
+
+    /// Swap in a freshly loaded show. Reloading the same file keeps running
+    /// cues (matched by cue number); cues that disappeared, or everything when
+    /// a different file is loaded, fade out with their own `fade_out`.
+    fn apply_show(&mut self, l: Loaded) {
+        let same_file = self.show_path.as_deref() == Some(l.path.as_path());
+        let remap: Vec<Option<usize>> = if same_file {
+            loader::remap(&self.show, &l.show)
+        } else {
+            vec![None; self.show.cues.len()]
+        };
+        let m = |i: usize| remap.get(i).copied().flatten();
+
+        // Voices: re-point or fade out.
+        let mut orphans = 0;
+        for (voice, idx) in std::mem::take(&mut self.voice_cue) {
+            match m(idx) {
+                Some(n) => {
+                    self.voice_cue.insert(voice, n);
+                }
+                None => {
+                    let fade = match &self.show.cues[idx].kind {
+                        CueKind::Audio(a) => a.fade_out,
+                        _ => 0.0,
+                    };
+                    let frames = self.audio.secs_to_frames(fade);
+                    self.audio.send(AudioCmd::Fade {
+                        id: voice,
+                        target: 0.0,
+                        frames,
+                        stop: true,
+                    });
+                    orphans += 1;
+                }
+            }
+        }
+        self.cue_voices.clear();
+        for (&v, &i) in &self.voice_cue {
+            self.cue_voices.entry(i).or_default().push(v);
+        }
+        self.states = std::mem::take(&mut self.states)
+            .into_iter()
+            .filter_map(|(i, s)| m(i).map(|n| (n, s)))
+            .collect();
+        self.timers = std::mem::take(&mut self.timers)
+            .into_vec()
+            .into_iter()
+            .filter_map(|Reverse(mut t)| {
+                t.action = match t.action {
+                    Action::Fire(i) => Action::Fire(m(i)?),
+                    Action::Continue(i) => Action::Continue(m(i)?),
+                    Action::Done(i) => Action::Done(m(i)?),
+                };
+                Some(Reverse(t))
+            })
+            .collect();
+
+        self.playhead = if same_file {
+            match self
+                .show
+                .cues
+                .get(self.playhead)
+                .and_then(|c| l.show.find(&c.number))
+            {
+                Some(i) => i,
+                None => self.playhead.min(l.show.cues.len()),
+            }
+        } else {
+            0
+        };
+
+        if self.show_path.is_some() {
+            let (a, b) = (&self.show.settings, &l.show.settings);
+            if a.osc_listen != b.osc_listen || a.audio_device != b.audio_device {
+                log::warn!("osc_listen / audio_device changed: restart the engine to apply");
+            }
+        }
+        for w in &l.warnings {
+            log::warn!("show: {w}");
+        }
+
+        let sr = self.audio.sample_rate as f32;
+        self.durations = feedback::durations(&l.show, |p| {
+            l.clips.get(p).map(|c| (c.clip.len() / 2) as f32 / sr)
+        });
+        let mb: usize = l.clips.values().map(|c| c.clip.len() * 4).sum::<usize>() >> 20;
+        let summary = format!(
+            "{} cues · {} clips ({mb} MiB, {} decoded, {} cached) in {:.0?}",
+            l.show.cues.len(),
+            l.clips.len(),
+            l.decoded,
+            l.reused,
+            l.elapsed
+        );
+        log::info!(
+            "{} '{}' — {summary}{}",
+            if same_file { "reloaded" } else { "loaded" },
+            l.show.name,
+            if orphans > 0 {
+                format!(", faded out {orphans} voice(s)")
+            } else {
+                String::new()
+            }
+        );
+        let message = match l.warnings.as_slice() {
+            [] => summary,
+            [w] => format!("{summary} · warning: {w}"),
+            [w, rest @ ..] => format!("{summary} · {} warnings, first: {w}", rest.len() + 1),
+        };
+
+        self.show = l.show;
+        self.clips = l.clips;
+        self.show_path = Some(l.path);
+        self.show_mtime = l.mtime;
+        self.dirty = true;
+
+        let path = self.show_path.as_deref().unwrap().display().to_string();
+        self.subs.broadcast_many(self.cue_list());
+        self.subs
+            .broadcast(feedback::load_status("ok", &path, &message));
+        self.print_status();
     }
 
     fn push_feedback(&mut self) {

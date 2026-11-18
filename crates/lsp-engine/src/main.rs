@@ -1,9 +1,10 @@
 mod controller;
 mod feedback;
+mod loader;
 mod midi;
 mod osc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use lsp_audio::{AudioConfig, AudioHandle};
 use lsp_core::{Command, Show};
@@ -17,7 +18,7 @@ use std::path::PathBuf;
     about = "Headless cue engine (Linux Show Player-style), OSC-controlled"
 )]
 struct Args {
-    /// Show file (.toml)
+    /// Show file (.toml). Optional: without it the engine waits for /lsp/load.
     show: Option<PathBuf>,
     /// List audio hosts/devices and MIDI ports, then exit
     #[arg(long)]
@@ -34,6 +35,9 @@ struct Args {
     /// Disable stdin console (for daemon / systemd use)
     #[arg(long)]
     no_stdin: bool,
+    /// Don't reload the show when its file changes on disk
+    #[arg(long)]
+    no_watch: bool,
 }
 
 fn main() -> Result<()> {
@@ -48,19 +52,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let path = args.show.context("show file required (see --help)")?;
-    let show = Show::load(&path)?;
-    let base = path.parent().map(PathBuf::from).unwrap_or_default();
-    log::info!("show '{}' — {} cues", show.name, show.cues.len());
+    // Settings (OSC port, audio device) come from the initial show; the full
+    // load (with decoding) needs the device sample rate, so it happens after.
+    let settings = match &args.show {
+        Some(p) => Show::load(p)?.settings,
+        None => Show::empty().settings,
+    };
 
     let audio = AudioHandle::start(AudioConfig {
         host: args.host,
-        device: args.device.or_else(|| show.settings.audio_device.clone()),
+        device: args.device.or_else(|| settings.audio_device.clone()),
     })?;
 
     let (tx, rx) = crossbeam_channel::unbounded::<Command>();
     let feedback_sock = osc::spawn_server(
-        args.osc.as_deref().unwrap_or(&show.settings.osc_listen),
+        args.osc.as_deref().unwrap_or(&settings.osc_listen),
         tx.clone(),
     )?;
 
@@ -77,7 +83,7 @@ fn main() -> Result<()> {
             .name("lsp-stdin".into())
             .spawn(move || {
                 eprintln!(
-                    "console: <enter>=GO | stop [n] | panic | goto n | next | prev | status | quit"
+                    "console: <enter>=GO | stop [n] | panic | goto n | next | prev | status | load <path> | reload | quit"
                 );
                 for line in std::io::stdin().lock().lines().map_while(Result::ok) {
                     match Command::parse(&line) {
@@ -93,7 +99,12 @@ fn main() -> Result<()> {
     }
     drop(tx);
 
-    let mut ctl = controller::Controller::new(show, &base, audio, feedback_sock)?;
+    // Initial load is synchronous so a broken show file fails at startup.
+    let loaded = match &args.show {
+        Some(p) => Some(loader::load(p, audio.sample_rate, &Default::default())?),
+        None => None,
+    };
+    let mut ctl = controller::Controller::new(loaded, audio, feedback_sock, !args.no_watch)?;
     ctl.run(rx);
     Ok(())
 }

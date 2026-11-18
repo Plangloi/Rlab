@@ -117,6 +117,48 @@ main {
   padding: 12px 18px 8px;
 }
 .list-head h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.list-head .file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 12px ui-monospace, Menlo, monospace;
+}
+.file-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.file-actions button { padding: 4px 10px; font-size: 12px; }
+
+.banner {
+  --tone: var(--prewait);
+  position: relative;
+  margin: 0 18px 8px;
+  padding: 8px 36px 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--tone) 60%, transparent);
+  border-left: 3px solid var(--tone);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tone) 12%, var(--bg));
+  font-size: 13px;
+}
+.banner.ok { --tone: var(--go); }
+.banner.error { --tone: var(--panic); }
+.banner pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  font: 12px/1.35 ui-monospace, Menlo, monospace;
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.banner .close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+}
+.empty button { margin-top: 12px; }
 
 .table-wrap { flex: 1; overflow: auto; position: relative; }
 

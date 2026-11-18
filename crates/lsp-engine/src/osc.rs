@@ -2,6 +2,7 @@
 //!
 //! In:  /lsp/go  /lsp/stop [cue]  /lsp/panic  /lsp/goto <cue>  /lsp/next  /lsp/prev  /lsp/status
 //!      /lsp/subscribe [reply_port]  /lsp/unsubscribe [reply_port]  /lsp/cuelist [reply_port]
+//!      /lsp/load <path>  /lsp/reload
 //! Feedback (see `feedback`) is sent from the same socket.
 //! Bundles are flattened; timetags ignored (execute on receipt).
 
@@ -88,6 +89,11 @@ pub fn to_command(m: &OscMessage, src: SocketAddr) -> Option<Command> {
         "/lsp/subscribe" => Command::Subscribe(reply()),
         "/lsp/unsubscribe" => Command::Unsubscribe(reply()),
         "/lsp/cuelist" => Command::CueList(reply()),
+        "/lsp/load" => match m.args.first() {
+            Some(OscType::String(p)) if !p.is_empty() => Command::Load(p.into()),
+            _ => return None,
+        },
+        "/lsp/reload" => Command::Reload,
         _ => return None,
     })
 }

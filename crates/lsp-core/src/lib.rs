@@ -145,14 +145,22 @@ pub enum Command {
     Unsubscribe(SocketAddr),
     /// Re-send the full cue list to one client.
     CueList(SocketAddr),
+    /// Load a show file (path on the engine host).
+    Load(PathBuf),
+    /// Re-read the current show file.
+    Reload,
     Quit,
 }
 
 impl Command {
-    /// Parse a text command: `go`, `stop [n]`, `panic`, `goto n`, `next`, `prev`, `status`, `quit`.
+    /// Parse a text command: `go`, `stop [n]`, `panic`, `goto n`, `next`, `prev`,
+    /// `status`, `load <path>`, `reload`, `quit`.
     pub fn parse(line: &str) -> Option<Self> {
+        let line = line.trim();
         let mut it = line.split_whitespace();
         let head = it.next().unwrap_or("go").to_ascii_lowercase();
+        // `load` takes the rest of the line so paths may contain spaces.
+        let rest = line.get(head.len()..).unwrap_or("").trim();
         let arg = it.next().map(str::to_string);
         Some(match head.as_str() {
             "go" | "g" => Command::Go,
@@ -162,6 +170,8 @@ impl Command {
             "next" | "n" => Command::Next,
             "prev" => Command::Prev,
             "status" | "?" => Command::Status,
+            "load" if !rest.is_empty() => Command::Load(PathBuf::from(rest)),
+            "reload" => Command::Reload,
             "quit" | "q" | "exit" => Command::Quit,
             _ => return None,
         })
@@ -192,6 +202,15 @@ impl NextAction {
 }
 
 impl Show {
+    /// Placeholder used when the engine starts without a show file.
+    pub fn empty() -> Self {
+        Self {
+            name: String::new(),
+            settings: ShowSettings::default(),
+            cues: Vec::new(),
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let txt =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -300,6 +319,12 @@ target = "99"
             Some(Command::Stop(Some("3".into())))
         );
         assert_eq!(Command::parse("goto"), None);
+        assert_eq!(
+            Command::parse("load /tmp/My Show.toml"),
+            Some(Command::Load("/tmp/My Show.toml".into()))
+        );
+        assert_eq!(Command::parse("load"), None);
+        assert_eq!(Command::parse("reload"), Some(Command::Reload));
     }
 
     #[test]

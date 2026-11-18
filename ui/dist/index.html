@@ -32,6 +32,16 @@
       <div class="list-head">
         <h1 id="show-name">—</h1>
         <span id="cue-count" class="muted"></span>
+        <span id="show-file" class="file muted"></span>
+        <div class="file-actions">
+          <button id="open" title="Open a show file (⌘O)">Open…</button>
+          <button id="reload" title="Reload the show file from disk (⌘R)">Reload</button>
+        </div>
+      </div>
+      <div id="banner" class="banner" hidden>
+        <span id="banner-text"></span>
+        <pre id="banner-detail" hidden></pre>
+        <button id="banner-close" class="close" title="Dismiss">×</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -66,7 +76,7 @@
       <input id="engine" spellcheck="false" autocomplete="off" />
     </form>
     <span id="conn-text" class="muted">offline</span>
-    <span class="keys muted">Space GO · Esc stop all · ↑↓ move standby · click a cue to set standby</span>
+    <span class="keys muted">Space GO · Esc stop all · ↑↓ standby · ⌘O open · ⌘R reload</span>
   </footer>
 
   <script src="app.js"></script>

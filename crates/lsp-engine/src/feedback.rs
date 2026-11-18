@@ -5,9 +5,10 @@
 //! sender's host). Packets are sent from the OSC server socket.
 //!
 //! Out:
-//!   /lsp/show   name:s count:i
+//!   /lsp/show   name:s count:i path:s
 //!   /lsp/cue    idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f
 //!   /lsp/state  standby:i  [idx:i phase:s elapsed:f duration:f]*
+//!   /lsp/load   status:s path:s message:s     (status: loading | ok | error)
 //!
 //! `standby` is the playhead index (-1 = end of list). `duration` -1 = unbounded
 //! (looping audio). `phase` is `pre_wait` | `running` | `stopping`.
@@ -67,6 +68,12 @@ impl Subscribers {
         }
     }
 
+    pub fn broadcast_many(&self, msgs: Vec<OscMessage>) {
+        for m in msgs {
+            self.broadcast(m);
+        }
+    }
+
     pub fn broadcast(&self, msg: OscMessage) {
         let Ok(b) = rosc::encoder::encode(&OscPacket::Message(msg)) else {
             return;
@@ -87,13 +94,14 @@ fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
 }
 
 /// `/lsp/show` followed by one `/lsp/cue` per cue.
-pub fn cue_list(show: &Show, durations: &[f32]) -> Vec<OscMessage> {
+pub fn cue_list(show: &Show, durations: &[f32], path: &str) -> Vec<OscMessage> {
     let mut out = Vec::with_capacity(show.cues.len() + 1);
     out.push(msg(
         "/lsp/show",
         vec![
             OscType::String(show.name.clone()),
             OscType::Int(show.cues.len() as i32),
+            OscType::String(path.into()),
         ],
     ));
     for (i, c) in show.cues.iter().enumerate() {
@@ -112,6 +120,17 @@ pub fn cue_list(show: &Show, durations: &[f32]) -> Vec<OscMessage> {
         ));
     }
     out
+}
+
+pub fn load_status(status: &str, path: &str, message: &str) -> OscMessage {
+    msg(
+        "/lsp/load",
+        vec![
+            OscType::String(status.into()),
+            OscType::String(path.into()),
+            OscType::String(message.into()),
+        ],
+    )
 }
 
 pub struct RunInfo {
@@ -204,7 +223,8 @@ duration = 2.5
         .unwrap();
         let d = durations(&show, |_| Some(10.0));
         assert_eq!(d, vec![9.0, -1.0, 2.5]);
-        let l = cue_list(&show, &d);
+        let l = cue_list(&show, &d, "/x/show.toml");
+        assert_eq!(l[0].args[2], OscType::String("/x/show.toml".into()));
         assert_eq!(l.len(), 4);
         assert_eq!(l[3].args[3], OscType::String("wait".into()));
     }

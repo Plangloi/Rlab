@@ -13,6 +13,7 @@ use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 /// Re-subscribe interval; must be well under the engine's 10 s TTL.
 const HEARTBEAT: Duration = Duration::from_secs(2);
@@ -43,6 +44,16 @@ type Shared = Arc<Client>;
 struct ShowInfo {
     name: String,
     count: i32,
+    /// Show file path on the engine host ("" = none loaded).
+    path: String,
+}
+
+#[derive(Serialize, Clone)]
+struct LoadInfo {
+    /// loading | ok | error
+    status: String,
+    path: String,
+    message: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -78,11 +89,11 @@ fn resolve(addr: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("{addr}: no IPv4 address"))
 }
 
-/// Transport command: `go`, `stop [cue]`, `panic`, `goto cue`, `next`, `prev`.
+/// Transport command: `go`, `stop [cue]`, `panic`, `goto cue`, `next`, `prev`, `reload`.
 #[tauri::command]
 fn command(client: State<Shared>, cmd: String, arg: Option<String>) -> Result<(), String> {
     let path = match cmd.as_str() {
-        "go" | "stop" | "panic" | "goto" | "next" | "prev" => format!("/lsp/{cmd}"),
+        "go" | "stop" | "panic" | "goto" | "next" | "prev" | "reload" => format!("/lsp/{cmd}"),
         _ => return Err(format!("unknown command {cmd}")),
     };
     let args = arg.into_iter().map(OscType::String).collect();
@@ -102,6 +113,36 @@ fn set_engine(client: State<Shared>, addr: String) -> Result<String, String> {
     *client.engine.lock().unwrap() = new;
     client.send("/lsp/subscribe", vec![])?;
     Ok(new.to_string())
+}
+
+/// Pick a show file and tell the engine to load it. The path is local to this
+/// machine, so it only resolves if the engine runs here (or sees the same path).
+/// Returns the chosen path, or None if the dialog was cancelled.
+#[tauri::command]
+async fn open_show(
+    app: AppHandle,
+    client: State<'_, Shared>,
+    current: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dlg = app
+        .dialog()
+        .file()
+        .set_title("Open show")
+        .add_filter("Show file", &["toml"]);
+    if let Some(dir) = current
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .and_then(|p| std::path::Path::new(p).parent())
+    {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(picked) = dlg.blocking_pick_file() else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let path = path.to_string_lossy().into_owned();
+    client.send("/lsp/load", vec![OscType::String(path.clone())])?;
+    Ok(Some(path))
 }
 
 /// Ask the engine to re-send the cue list (e.g. after a missed packet).
@@ -149,6 +190,7 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
             ShowInfo {
                 name: arg_s(a.first()),
                 count: arg_i(a.get(1)),
+                path: arg_s(a.get(2)),
             },
         ),
         "/lsp/cue" => app.emit(
@@ -162,6 +204,14 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
                 next: arg_s(a.get(5)),
                 pre_wait: arg_f(a.get(6)),
                 post_wait: arg_f(a.get(7)),
+            },
+        ),
+        "/lsp/load" => app.emit(
+            "lsp:load",
+            LoadInfo {
+                status: arg_s(a.first()),
+                path: arg_s(a.get(1)),
+                message: arg_s(a.get(2)),
             },
         ),
         "/lsp/state" => app.emit(
@@ -221,9 +271,10 @@ fn main() {
     });
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(client.clone())
         .invoke_handler(tauri::generate_handler![
-            command, get_engine, set_engine, refresh
+            command, get_engine, set_engine, refresh, open_show
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

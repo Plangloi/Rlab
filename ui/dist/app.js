@@ -46,8 +46,30 @@ $("prev").addEventListener("click", () => send("prev"));
 $("next").addEventListener("click", () => send("next"));
 $("stop-all").addEventListener("click", () => send("stop"));
 $("panic").addEventListener("click", () => send("panic"));
+$("open").addEventListener("click", openShow);
+$("reload").addEventListener("click", () => send("reload"));
+$("banner-close").addEventListener("click", () => ($("banner").hidden = true));
+
+async function openShow() {
+  try {
+    await invoke("open_show", { current: model.show?.path || null });
+  } catch (e) {
+    showBanner("error", "Could not open show", String(e));
+  }
+}
 
 document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey) {
+    const k = e.key.toLowerCase();
+    if (k === "o") {
+      e.preventDefault();
+      openShow();
+    } else if (k === "r") {
+      e.preventDefault(); // also stops the webview from reloading itself
+      send("reload");
+    }
+    return;
+  }
   if (e.target instanceof HTMLInputElement) return;
   switch (e.key) {
     case " ":
@@ -111,8 +133,36 @@ const NEXT_TEXT = {
   do_nothing: "",
 };
 
-function cueLabel(c) {
-  return c ? `${c.number} ${c.name}` : "";
+function baseName(p) {
+  return p ? p.split(/[\\/]/).pop() : "";
+}
+
+// ── Load status banner ────────────────────────────────────
+
+let bannerTimer = null;
+
+function showBanner(kind, text, detail) {
+  clearTimeout(bannerTimer);
+  const b = $("banner");
+  b.className = `banner ${kind}`;
+  $("banner-text").textContent = text;
+  $("banner-detail").textContent = detail || "";
+  $("banner-detail").hidden = !detail;
+  b.hidden = false;
+  if (kind === "ok") bannerTimer = setTimeout(() => (b.hidden = true), 4000);
+}
+
+function onLoad({ status, path, message }) {
+  const file = baseName(path);
+  if (status === "loading") {
+    // Only surface slow loads; most reloads finish in a few ms.
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => showBanner("loading", `Loading ${file}…`), 300);
+  } else if (status === "ok") {
+    showBanner("ok", `Loaded ${file} · ${message}`);
+  } else {
+    showBanner("error", file ? `Could not load ${file} — still running the previous show` : message, file ? message : "");
+  }
 }
 
 // ── Cue list ──────────────────────────────────────────────
@@ -126,14 +176,38 @@ function resetShow() {
   renderStandby();
 }
 
+function renderEmpty() {
+  const el = $("empty");
+  el.hidden = model.cues.length > 0;
+  if (el.hidden) return;
+  el.textContent = "";
+  if (!model.show) {
+    el.textContent = "Waiting for the engine…";
+  } else {
+    el.append(model.show.path ? "This show has no cues." : "No show loaded.");
+    const b = document.createElement("button");
+    b.textContent = "Open a show…";
+    b.addEventListener("click", openShow);
+    el.append(document.createElement("br"), b);
+  }
+}
+
 function renderList() {
   const tbody = $("cues");
   tbody.textContent = "";
   rows = [];
+  // Indices may have shifted (reload): rebuild active items from scratch.
+  for (const li of activeItems.values()) li.remove();
+  activeItems.clear();
   const cues = model.cues;
-  $("show-name").textContent = model.show?.name ?? "—";
-  $("cue-count").textContent = model.show ? `${model.show.count} cues` : "";
-  $("empty").hidden = cues.length > 0;
+  const path = model.show?.path ?? "";
+  $("show-name").textContent = path ? model.show.name || "Untitled" : "—";
+  $("cue-count").textContent = path ? `${model.show.count} cues` : "";
+  $("show-file").textContent = baseName(path);
+  $("show-file").title = path;
+  $("reload").disabled = !path;
+  document.title = model.show?.name ? `${model.show.name} — Show Player` : "Show Player";
+  renderEmpty();
 
   cues.forEach((c, idx) => {
     if (!c) return;
@@ -183,7 +257,7 @@ function renderStandby() {
     $("sb-meta").textContent = bits.join(" · ");
   } else {
     $("sb-number").textContent = "—";
-    $("sb-name").textContent = model.show ? "End of cue list" : "No show loaded";
+    $("sb-name").textContent = model.show?.path ? "End of cue list" : "No show loaded";
     $("sb-meta").textContent = "";
   }
   $("go").disabled = !c;
@@ -298,6 +372,7 @@ listen("lsp:cue", ({ payload }) => {
 });
 
 listen("lsp:state", ({ payload }) => onState(payload));
+listen("lsp:load", ({ payload }) => onLoad(payload));
 
 invoke("get_engine").then((a) => ($("engine").value = a));
 invoke("refresh").catch(() => {});
