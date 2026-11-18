@@ -3,6 +3,21 @@
 Cue-based show playback engine for macOS + Linux, modelled on [Linux Show Player](https://www.linux-show-player.org/).
 Headless engine first — every UI (Tauri, egui, TouchOSC, Q-SYS, Stream Deck) is just an OSC client.
 
+![Operator UI — Standard theme, run mode: preshow loop running, fade in progress, cue 3 on standby](docs/screenshots/standard-run.jpg)
+
+- **Real-time audio engine** in Rust: lock-free mixer, preloaded clips, GO latency of one audio buffer
+- **Cue types**: audio, fade, stop, OSC, MIDI/MSC, wait — with pre/post-waits, auto-continue and auto-follow
+- **Show safety**: second-trigger policy, pause/resume, hard stop, double-panic, broken-cue detection
+- **Live editing**: edit cues from the UI while the show runs; the TOML show file stays the source of truth (comments kept)
+- **Hot reload**: save the show file and running cues keep playing
+- **OSC everywhere**: control and state feedback (cue list, progress, output meters) for any remote surface
+- **Operator UI** (Tauri) with three themes
+
+| Underground | Pro |
+|---|---|
+| ![Underground theme: terminal look with ASCII progress bars, cue states and a live OSC traffic log](docs/screenshots/underground-run.jpg) | ![Pro theme: broadcast console with clocks, standby card, active cues and a master output meter](docs/screenshots/pro-run.jpg) |
+| Terminal look: cue STATE column, ASCII progress bars, live **OSC_TRAFFIC** log of what the UI sends and receives | Broadcast console: time-of-day and show-running clocks, device / DSP chips, Active panel, **MASTER OUT** meter with real engine levels |
+
 ## Layout
 
 ```
@@ -74,7 +89,12 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 cd ui/src-tauri && cargo run --release              # UI; --engine host:port or LSP_ENGINE to target a remote engine
 ```
 
-Three themes (top bar **Theme**, remembered per machine): **Standard**; **Underground** — a terminal look with ASCII progress bars, cue STATE column and a live OSC_TRAFFIC log of what the UI sends and receives; **Pro** — a broadcast console with time-of-day and show-running clocks, device / DSP-load chips, an Active panel and a MASTER OUT meter (real engine levels: peak, peak hold, clips, remotes). Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby, Open… / Reload with load status. Keys: Space GO · Esc panic (twice = hard stop) · P pause/resume all · ↑↓ move standby · ⌘O open · ⌘R reload. Per-cue Pause/Resume/Stop in the Active panel; broken cues are marked ⚠ with the reason; the standby line warns when GO will be ignored. Open… sends the picked path to the engine, so it only works when the engine can see the same path (same machine / shared mount). Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
+- **Themes**: Standard, Underground, Pro — switch with **Theme** in the top bar (remembered per machine).
+- **Run mode**: GO with the standby cue and what it will do, cue list with live progress, Pause all, Stop all, Panic (twice = hard stop), per-cue pause / stop, click a cue to set standby.
+- **Warnings**: broken cues are marked ⚠ with the reason; the standby line warns when GO will be ignored.
+- **Shows**: New… / Open… / Reload with load status. Open… sends the picked path to the engine, so it only works when the engine sees the same path (same machine or shared mount).
+- **Keys**: Space GO · Esc panic (twice = hard stop) · P pause / resume all · ↑↓ move standby · ⌘E edit · ⌘O open · ⌘R reload.
+- **Build**: the front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
 
 ## Show loading / hot reload
 
@@ -105,6 +125,8 @@ The show file stays the source of truth. Edits are applied to the TOML with `tom
 - Refused: duplicate numbers, fields that don't belong to the cue type, anything that wouldn't parse.
 
 In the UI, **Edit** (⌘E) switches to edit mode: click selects, double-click sets standby, the inspector edits the selected cue (changes apply on Enter / blur), and the toolbar adds, duplicates, moves and deletes (⌫ twice). **New…** creates a show.
+
+![Edit mode: add-cue toolbar, selected cue, and the inspector with Basics / Audio / Triggers tabs](docs/screenshots/standard-edit.jpg)
 
 ## Safety
 
@@ -146,5 +168,6 @@ See `shows/demo.toml`.
 - [x] Cue editing (add / update / delete / duplicate / move) over OSC + UI inspector
 - [x] Output level meters (lock-free peaks from the audio callback)
 - [ ] UI: drag-to-reorder, multi-select, undo
-- [ ] Group cues, playlist mode, cue edit over OSC
+- [ ] Phone remote (web page served by the engine)
+- [ ] Group cues, playlist mode
 - [ ] Streaming decode for long files (> RAM budget)
