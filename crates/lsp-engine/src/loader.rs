@@ -30,6 +30,8 @@ pub struct Loaded {
     pub clips: ClipCache,
     /// Non-fatal problems (validation warnings, undecodable media).
     pub warnings: Vec<String>,
+    /// Per cue: what would make it misbehave if fired (None = fine).
+    pub problems: Vec<Option<String>>,
     pub decoded: usize,
     pub reused: usize,
     pub elapsed: Duration,
@@ -47,10 +49,11 @@ pub fn load(path: &Path, sample_rate: u32, cache: &ClipCache) -> Result<Loaded> 
     let mut show = Show::load(&path)?;
     let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut warnings = show.validate();
+    let mut problems = show.cue_problems();
 
     let mut clips = ClipCache::new();
     let (mut decoded, mut reused) = (0, 0);
-    for cue in &mut show.cues {
+    for (i, cue) in show.cues.iter_mut().enumerate() {
         let CueKind::Audio(a) = &mut cue.kind else {
             continue;
         };
@@ -71,7 +74,14 @@ pub fn load(path: &Path, sample_rate: u32, cache: &ClipCache) -> Result<Loaded> 
                 clips.insert(a.file.clone(), CachedClip { mtime: m, clip });
                 decoded += 1;
             }
-            Err(e) => warnings.push(format!("cue {}: {e:#}", cue.number)),
+            Err(e) => {
+                warnings.push(format!("cue {}: {e:#}", cue.number));
+                let msg = format!("media: {e:#}");
+                problems[i] = Some(match problems[i].take() {
+                    Some(p) => format!("{p}; {msg}"),
+                    None => msg,
+                });
+            }
         }
     }
 
@@ -81,6 +91,7 @@ pub fn load(path: &Path, sample_rate: u32, cache: &ClipCache) -> Result<Loaded> 
         show,
         clips,
         warnings,
+        problems,
         decoded,
         reused,
         elapsed: t0.elapsed(),
@@ -124,6 +135,7 @@ mod tests {
         assert_eq!(a.show.cues.len(), 6);
         assert_eq!((a.decoded, a.reused), (2, 0));
         assert!(a.warnings.is_empty(), "{:?}", a.warnings);
+        assert!(a.problems.iter().all(Option::is_none));
         match &a.show.cues[0].kind {
             CueKind::Audio(c) => assert!(c.file.is_absolute()),
             k => panic!("{k:?}"),

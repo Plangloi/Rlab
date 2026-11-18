@@ -83,7 +83,7 @@ fn main() -> Result<()> {
             .name("lsp-stdin".into())
             .spawn(move || {
                 eprintln!(
-                    "console: <enter>=GO | stop [n] | panic | goto n | next | prev | status | load <path> | reload | quit"
+                    "console: <enter>=GO | stop [n] | hs [n] | pause [n] | resume [n] | panic | goto n | next | prev | status | load <path> | reload | quit"
                 );
                 for line in std::io::stdin().lock().lines().map_while(Result::ok) {
                     match Command::parse(&line) {

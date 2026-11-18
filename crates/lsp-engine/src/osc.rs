@@ -1,6 +1,7 @@
 //! OSC control surface (UDP) + OSC cue output.
 //!
-//! In:  /lsp/go  /lsp/stop [cue]  /lsp/panic  /lsp/goto <cue>  /lsp/next  /lsp/prev  /lsp/status
+//! In:  /lsp/go  /lsp/stop [cue]  /lsp/hardstop [cue]  /lsp/pause [cue]  /lsp/resume [cue]
+//!      /lsp/panic  /lsp/goto <cue>  /lsp/next  /lsp/prev  /lsp/status
 //!      /lsp/subscribe [reply_port]  /lsp/unsubscribe [reply_port]  /lsp/cuelist [reply_port]
 //!      /lsp/load <path>  /lsp/reload
 //! Feedback (see `feedback`) is sent from the same socket.
@@ -81,6 +82,9 @@ pub fn to_command(m: &OscMessage, src: SocketAddr) -> Option<Command> {
     Some(match m.addr.as_str() {
         "/lsp/go" => Command::Go,
         "/lsp/stop" => Command::Stop(a0),
+        "/lsp/hardstop" => Command::HardStop(a0),
+        "/lsp/pause" => Command::Pause(a0),
+        "/lsp/resume" => Command::Resume(a0),
         "/lsp/panic" => Command::Panic,
         "/lsp/goto" => Command::Goto(a0?),
         "/lsp/next" => Command::Next,

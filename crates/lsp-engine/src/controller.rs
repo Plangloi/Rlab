@@ -3,8 +3,10 @@
 
 use anyhow::Result;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
-use lsp_audio::{AudioCmd, AudioEvent, AudioHandle, VoiceId};
-use lsp_core::{db_to_lin, AudioCue, Command, CueKind, NextAction, Show};
+use lsp_audio::{AudioCmd, AudioEvent, AudioHandle, Curve, VoiceId};
+use lsp_core::{
+    db_to_lin, AudioCue, Command, CueKind, FadeCurve, NextAction, SecondTrigger, Show,
+};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::UdpSocket;
@@ -23,6 +25,37 @@ enum Action {
     Continue(usize),
     /// Timed cue (fade / wait) completed.
     Done(usize),
+}
+
+impl Action {
+    fn cue(self) -> usize {
+        match self {
+            Action::Fire(i) | Action::Continue(i) | Action::Done(i) => i,
+        }
+    }
+
+    fn map(self, f: impl Fn(usize) -> Option<usize>) -> Option<Self> {
+        Some(match self {
+            Action::Fire(i) => Action::Fire(f(i)?),
+            Action::Continue(i) => Action::Continue(f(i)?),
+            Action::Done(i) => Action::Done(f(i)?),
+        })
+    }
+}
+
+/// A timer frozen by pause, with the time it had left.
+#[derive(Debug, Clone, Copy)]
+struct PausedTimer {
+    remaining: Duration,
+    action: Action,
+}
+
+fn curve(c: FadeCurve) -> Curve {
+    match c {
+        FadeCurve::Linear => Curve::Linear,
+        FadeCurve::SCurve => Curve::SCurve,
+        FadeCurve::EqualPower => Curve::EqualPower,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,9 +87,37 @@ impl Phase {
 #[derive(Debug, Clone, Copy)]
 struct RunState {
     phase: Phase,
+    /// Shifted forward on resume, so `elapsed` excludes paused time.
     started: Instant,
+    paused_at: Option<Instant>,
     /// Seconds; -1 = unbounded.
     duration: f32,
+}
+
+impl RunState {
+    fn new(phase: Phase, duration: f32) -> Self {
+        Self {
+            phase,
+            started: Instant::now(),
+            paused_at: None,
+            duration,
+        }
+    }
+
+    fn elapsed(&self) -> f32 {
+        self.paused_at
+            .unwrap_or_else(Instant::now)
+            .saturating_duration_since(self.started)
+            .as_secs_f32()
+    }
+
+    fn phase_str(&self) -> &'static str {
+        if self.paused_at.is_some() && self.phase != Phase::Stopping {
+            "paused"
+        } else {
+            self.phase.as_str()
+        }
+    }
 }
 
 pub struct Controller {
@@ -71,7 +132,12 @@ pub struct Controller {
     cue_voices: HashMap<usize, Vec<VoiceId>>,
     next_voice: VoiceId,
     timers: BinaryHeap<Reverse<Timer>>,
+    paused_timers: Vec<PausedTimer>,
     seq: u64,
+    /// End of the current panic fade; a panic before then hard-stops.
+    panic_until: Option<Instant>,
+    /// Per-cue problems (missing media, bad targets, ...), sent to UIs.
+    problems: Vec<Option<String>>,
     osc_out: UdpSocket,
     midi: MidiOut,
     subs: Subscribers,
@@ -94,6 +160,8 @@ const TICK: Duration = Duration::from_millis(5);
 const PUSH_ACTIVE: Duration = Duration::from_millis(50);
 const PUSH_IDLE: Duration = Duration::from_secs(1);
 const WATCH_EVERY: Duration = Duration::from_millis(500);
+/// Hard stops still ramp this long to avoid a click.
+const HARD_STOP_FADE: f32 = 0.01;
 
 impl Controller {
     /// `loaded` = initial show (None → start empty and wait for `/lsp/load`).
@@ -115,7 +183,10 @@ impl Controller {
             cue_voices: HashMap::new(),
             next_voice: 1,
             timers: BinaryHeap::new(),
+            paused_timers: Vec::new(),
             seq: 0,
+            panic_until: None,
+            problems: Vec::new(),
             osc_out: UdpSocket::bind("0.0.0.0:0")?,
             midi: MidiOut::default(),
             subs: Subscribers::new(feedback_sock),
@@ -160,7 +231,10 @@ impl Controller {
             self.watch_file();
             self.push_feedback();
         }
-        self.audio.send(AudioCmd::FadeAll { frames: 0 });
+        self.audio.send(AudioCmd::FadeAll {
+            frames: 0,
+            curve: Curve::Linear,
+        });
         std::thread::sleep(Duration::from_millis(50));
         log::info!("bye");
     }
@@ -169,19 +243,46 @@ impl Controller {
         match cmd {
             Command::Go => self.go(),
             Command::Stop(None) => self.stop_all(None),
-            Command::Stop(Some(n)) => match self.show.find(&n) {
-                Some(i) => self.stop_cue(i, None),
-                None => log::warn!("stop: no cue {n}"),
-            },
-            Command::Panic => {
-                self.timers.clear();
-                for s in self.states.values_mut() {
-                    s.phase = Phase::Stopping;
+            Command::Stop(Some(n)) => {
+                if let Some(i) = self.find("stop", &n) {
+                    self.stop_cue(i, None)
                 }
-                let f = self.audio.secs_to_frames(self.show.settings.panic_fade);
-                self.audio.send(AudioCmd::FadeAll { frames: f });
-                log::warn!("PANIC");
             }
+            Command::HardStop(None) => self.hard_stop_all(),
+            Command::HardStop(Some(n)) => {
+                if let Some(i) = self.find("hardstop", &n) {
+                    self.hard_stop_cue(i)
+                }
+            }
+            Command::Pause(None) => {
+                let all = self.active_cues();
+                log::info!("pause all ({} cues)", all.len());
+                all.into_iter().for_each(|i| self.pause_cue(i));
+            }
+            Command::Pause(Some(n)) => {
+                if let Some(i) = self.find("pause", &n) {
+                    self.pause_cue(i)
+                }
+            }
+            Command::Resume(None) => {
+                let mut all: Vec<usize> = self
+                    .states
+                    .iter()
+                    .filter(|(_, s)| s.paused_at.is_some())
+                    .map(|(&i, _)| i)
+                    .chain(self.paused_timers.iter().map(|t| t.action.cue()))
+                    .collect();
+                all.sort_unstable();
+                all.dedup();
+                log::info!("resume all ({} cues)", all.len());
+                all.into_iter().for_each(|i| self.resume_cue(i));
+            }
+            Command::Resume(Some(n)) => {
+                if let Some(i) = self.find("resume", &n) {
+                    self.resume_cue(i)
+                }
+            }
+            Command::Panic => self.panic(),
             Command::Goto(n) => match self.show.find(&n) {
                 Some(i) => {
                     self.playhead = i;
@@ -223,9 +324,21 @@ impl Controller {
         }
     }
 
+    fn find(&self, what: &str, number: &str) -> Option<usize> {
+        let i = self.show.find(number);
+        if i.is_none() {
+            log::warn!("{what}: no cue {number}");
+        }
+        i
+    }
+
     fn schedule(&mut self, after: f32, action: Action) {
+        self.schedule_in(Duration::from_secs_f32(after.max(0.0)), action);
+    }
+
+    fn schedule_in(&mut self, after: Duration, action: Action) {
         self.seq += 1;
-        let at = Instant::now() + Duration::from_secs_f32(after.max(0.0));
+        let at = Instant::now() + after;
         self.timers.push(Reverse(Timer {
             at,
             seq: self.seq,
@@ -280,22 +393,41 @@ impl Controller {
         self.print_status();
     }
 
-    /// Entry point for GO and chained triggers: honours pre-wait.
+    /// Entry point for GO and chained triggers: honours pre-wait and the
+    /// cue's second-trigger policy.
     fn trigger(&mut self, idx: usize) {
         let Some(cue) = self.show.cues.get(idx) else {
             return;
         };
         self.playhead = self.playhead.max(idx + 1);
+        let active = self
+            .states
+            .get(&idx)
+            .is_some_and(|s| s.phase != Phase::Stopping);
+        if active {
+            match cue.second_trigger {
+                SecondTrigger::Ignore => {
+                    log::info!("     {} already running — ignored", self.label(idx));
+                    return;
+                }
+                SecondTrigger::Stop => {
+                    log::info!("     {} second trigger → stop", self.label(idx));
+                    return self.stop_cue(idx, None);
+                }
+                SecondTrigger::HardStop => {
+                    log::info!("     {} second trigger → hard stop", self.label(idx));
+                    return self.hard_stop_cue(idx);
+                }
+                SecondTrigger::Restart => {
+                    log::info!("     {} second trigger → restart", self.label(idx));
+                    self.hard_stop_cue(idx);
+                }
+            }
+        }
+        let cue = &self.show.cues[idx];
         if cue.pre_wait > 0.0 {
             let pw = cue.pre_wait;
-            self.states.insert(
-                idx,
-                RunState {
-                    phase: Phase::PreWait,
-                    started: Instant::now(),
-                    duration: pw,
-                },
-            );
+            self.states.insert(idx, RunState::new(Phase::PreWait, pw));
             self.schedule(pw, Action::Fire(idx));
         } else {
             self.execute(idx);
@@ -312,6 +444,7 @@ impl Controller {
                 duration,
                 gain_db,
                 stop,
+                curve: c,
             } => {
                 match self.show.find(target) {
                     Some(t) => {
@@ -322,6 +455,7 @@ impl Controller {
                                 id,
                                 target: lvl,
                                 frames,
+                                curve: curve(*c),
                                 stop: *stop,
                             });
                         }
@@ -364,14 +498,8 @@ impl Controller {
         if finished_now {
             self.states.remove(&idx);
         } else {
-            self.states.insert(
-                idx,
-                RunState {
-                    phase: Phase::Running,
-                    started: Instant::now(),
-                    duration: self.durations[idx],
-                },
-            );
+            self.states
+                .insert(idx, RunState::new(Phase::Running, self.durations[idx]));
         }
         if cue.next == NextAction::AutoContinue {
             self.schedule(cue.post_wait, Action::Continue(idx));
@@ -399,6 +527,7 @@ impl Controller {
             clip,
             gain: db_to_lin(a.gain_db),
             fade_in: self.audio.secs_to_frames(a.fade_in),
+            curve: curve(a.curve),
             start: (a.start.max(0.0) * sr) as usize,
             end: a.end.map(|e| (e * sr) as usize).unwrap_or(usize::MAX),
             looping: a.looping,
@@ -414,13 +543,22 @@ impl Controller {
         }
     }
 
-    /// fade=None → use the audio cue's own fade_out.
+    /// fade=None → use the audio cue's own fade_out (and curve).
     fn stop_cue(&mut self, idx: usize, fade: Option<f32>) {
-        self.timers.retain(|Reverse(t)| !matches!(t.action, Action::Fire(i) | Action::Continue(i) | Action::Done(i) if i == idx));
-        let fade = fade.unwrap_or(match &self.show.cues[idx].kind {
-            CueKind::Audio(a) => a.fade_out,
-            _ => 0.0,
-        });
+        let (own_fade, c) = match &self.show.cues[idx].kind {
+            CueKind::Audio(a) => (a.fade_out, curve(a.curve)),
+            _ => (0.0, Curve::SCurve),
+        };
+        self.stop_cue_with(idx, fade.unwrap_or(own_fade), c);
+    }
+
+    fn hard_stop_cue(&mut self, idx: usize) {
+        self.stop_cue_with(idx, HARD_STOP_FADE, Curve::Linear);
+    }
+
+    fn stop_cue_with(&mut self, idx: usize, fade: f32, c: Curve) {
+        self.timers.retain(|Reverse(t)| t.action.cue() != idx);
+        self.paused_timers.retain(|t| t.action.cue() != idx);
         let frames = self.audio.secs_to_frames(fade);
         if let Some(s) = self.states.get_mut(&idx) {
             s.phase = Phase::Stopping;
@@ -430,6 +568,7 @@ impl Controller {
                 id,
                 target: 0.0,
                 frames,
+                curve: c,
                 stop: true,
             });
         }
@@ -437,10 +576,105 @@ impl Controller {
 
     fn stop_all(&mut self, fade: Option<f32>) {
         self.timers.clear();
+        self.paused_timers.clear();
         let running: Vec<usize> = self.cue_voices.keys().copied().collect();
         for idx in running {
             self.stop_cue(idx, fade);
         }
+    }
+
+    fn hard_stop_all(&mut self) {
+        self.timers.clear();
+        self.paused_timers.clear();
+        for s in self.states.values_mut() {
+            s.phase = Phase::Stopping;
+        }
+        self.audio.send(AudioCmd::FadeAll {
+            frames: self.audio.secs_to_frames(HARD_STOP_FADE),
+            curve: Curve::Linear,
+        });
+        log::warn!("HARD STOP all");
+    }
+
+    /// First panic: fade everything over `panic_fade`. A second panic while
+    /// that fade is running: hard stop.
+    fn panic(&mut self) {
+        let now = Instant::now();
+        if self.panic_until.is_some_and(|t| now < t) {
+            self.panic_until = None;
+            log::warn!("PANIC ×2");
+            return self.hard_stop_all();
+        }
+        self.timers.clear();
+        self.paused_timers.clear();
+        for s in self.states.values_mut() {
+            s.phase = Phase::Stopping;
+        }
+        let fade = self.show.settings.panic_fade;
+        self.audio.send(AudioCmd::FadeAll {
+            frames: self.audio.secs_to_frames(fade),
+            curve: Curve::SCurve,
+        });
+        self.panic_until = Some(now + Duration::from_secs_f32(fade.max(0.0)));
+        log::warn!("PANIC (again within {fade}s = hard stop)");
+    }
+
+    /// Cues with something in flight: run state, voices or pending timers.
+    fn active_cues(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self
+            .states
+            .keys()
+            .chain(self.cue_voices.keys())
+            .copied()
+            .chain(self.timers.iter().map(|Reverse(t)| t.action.cue()))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Freeze a cue: its voices (declicked), and its pre-wait / duration /
+    /// post-wait timers with their remaining time.
+    fn pause_cue(&mut self, idx: usize) {
+        let now = Instant::now();
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.timers)
+            .into_vec()
+            .into_iter()
+            .partition(|Reverse(t)| t.action.cue() == idx);
+        self.timers = rest.into();
+        for Reverse(t) in mine {
+            self.paused_timers.push(PausedTimer {
+                remaining: t.at.saturating_duration_since(now),
+                action: t.action,
+            });
+        }
+        for id in self.cue_voices.get(&idx).cloned().unwrap_or_default() {
+            self.audio.send(AudioCmd::Pause { id, paused: true });
+        }
+        if let Some(s) = self.states.get_mut(&idx) {
+            s.paused_at.get_or_insert(now);
+        }
+        log::info!("PAUSE {}", self.label(idx));
+    }
+
+    fn resume_cue(&mut self, idx: usize) {
+        let now = Instant::now();
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.paused_timers)
+            .into_iter()
+            .partition(|t| t.action.cue() == idx);
+        self.paused_timers = rest;
+        for t in mine {
+            self.schedule_in(t.remaining, t.action);
+        }
+        for id in self.cue_voices.get(&idx).cloned().unwrap_or_default() {
+            self.audio.send(AudioCmd::Pause { id, paused: false });
+        }
+        if let Some(s) = self.states.get_mut(&idx) {
+            if let Some(p) = s.paused_at.take() {
+                s.started += now.saturating_duration_since(p);
+            }
+        }
+        log::info!("RESUME {}", self.label(idx));
     }
 
     /// Drop run states with nothing left behind them (no voices, no pending
@@ -449,7 +683,9 @@ impl Controller {
         let pending: HashSet<usize> = self
             .timers
             .iter()
-            .filter_map(|Reverse(t)| match t.action {
+            .map(|Reverse(t)| t.action)
+            .chain(self.paused_timers.iter().map(|t| t.action))
+            .filter_map(|a| match a {
                 Action::Fire(i) | Action::Done(i) => Some(i),
                 Action::Continue(_) => None,
             })
@@ -465,7 +701,7 @@ impl Controller {
             .as_deref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        feedback::cue_list(&self.show, &self.durations, &path)
+        feedback::cue_list(&self.show, &self.durations, &self.problems, &path)
     }
 
     fn send_cue_list(&self, addr: std::net::SocketAddr) {
@@ -554,15 +790,16 @@ impl Controller {
                     self.voice_cue.insert(voice, n);
                 }
                 None => {
-                    let fade = match &self.show.cues[idx].kind {
-                        CueKind::Audio(a) => a.fade_out,
-                        _ => 0.0,
+                    let (fade, c) = match &self.show.cues[idx].kind {
+                        CueKind::Audio(a) => (a.fade_out, curve(a.curve)),
+                        _ => (0.0, Curve::SCurve),
                     };
                     let frames = self.audio.secs_to_frames(fade);
                     self.audio.send(AudioCmd::Fade {
                         id: voice,
                         target: 0.0,
                         frames,
+                        curve: c,
                         stop: true,
                     });
                     orphans += 1;
@@ -581,12 +818,15 @@ impl Controller {
             .into_vec()
             .into_iter()
             .filter_map(|Reverse(mut t)| {
-                t.action = match t.action {
-                    Action::Fire(i) => Action::Fire(m(i)?),
-                    Action::Continue(i) => Action::Continue(m(i)?),
-                    Action::Done(i) => Action::Done(m(i)?),
-                };
+                t.action = t.action.map(m)?;
                 Some(Reverse(t))
+            })
+            .collect();
+        self.paused_timers = std::mem::take(&mut self.paused_timers)
+            .into_iter()
+            .filter_map(|mut t| {
+                t.action = t.action.map(m)?;
+                Some(t)
             })
             .collect();
 
@@ -643,7 +883,12 @@ impl Controller {
             [w, rest @ ..] => format!("{summary} · {} warnings, first: {w}", rest.len() + 1),
         };
 
+        let broken = l.problems.iter().flatten().count();
+        if broken > 0 {
+            log::warn!("{broken} cue(s) have problems");
+        }
         self.show = l.show;
+        self.problems = l.problems;
         self.clips = l.clips;
         self.show_path = Some(l.path);
         self.show_mtime = l.mtime;
@@ -678,8 +923,8 @@ impl Controller {
             .iter()
             .map(|(&idx, s)| RunInfo {
                 idx,
-                phase: s.phase.as_str(),
-                elapsed: s.started.elapsed().as_secs_f32(),
+                phase: s.phase_str(),
+                elapsed: s.elapsed(),
                 duration: s.duration,
             })
             .collect();

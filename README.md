@@ -34,7 +34,9 @@ cargo build --release
 |---|---|---|
 | `/lsp/go` | – | fire standby cue, advance playhead |
 | `/lsp/stop` | `[cue]` | stop cue (uses its `fade_out`) or all |
-| `/lsp/panic` | – | clear timers, fade all (`panic_fade`) |
+| `/lsp/hardstop` | `[cue]` | stop immediately (10 ms declick) — cue or all |
+| `/lsp/pause` / `/lsp/resume` | `[cue]` | freeze / continue a cue or everything (audio, pre-/post-waits, durations) |
+| `/lsp/panic` | – | clear timers, fade all (`panic_fade`); **a second panic during the fade hard-stops** |
 | `/lsp/goto` | `cue` | set standby |
 | `/lsp/next` / `/lsp/prev` | – | move playhead |
 | `/lsp/status` | – | log standby + running |
@@ -55,11 +57,11 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 | Address | Args |
 |---|---|
 | `/lsp/show` | `name:s count:i path:s` |
-| `/lsp/cue` | `idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f` |
+| `/lsp/cue` | `idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f problem:s second_trigger:s` |
 | `/lsp/state` | `standby:i` then `[idx:i phase:s elapsed:f duration:f]` per active cue |
 | `/lsp/load` | `status:s path:s message:s` — `loading` · `ok` · `error` |
 
-`standby` = -1 at end of list. `duration` = -1 for looping audio. `phase` = `pre_wait` · `running` · `stopping`.
+`standby` = -1 at end of list. `duration` = -1 for looping audio. `phase` = `pre_wait` · `running` · `paused` · `stopping`. `problem` is empty for a healthy cue, otherwise why it would misbehave (missing media, missing/non-audio target, bad OSC host, duplicate number).
 
 ## Operator UI (Tauri)
 
@@ -68,7 +70,7 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 cd ui/src-tauri && cargo run --release              # UI; --engine host:port or LSP_ENGINE to target a remote engine
 ```
 
-Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby, Open… / Reload with load status. Keys: Space GO · Esc stop all · ↑↓ move standby · ⌘O open · ⌘R reload. Open… sends the picked path to the engine, so it only works when the engine can see the same path (same machine / shared mount). Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
+Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby, Open… / Reload with load status. Keys: Space GO · Esc panic (twice = hard stop) · P pause/resume all · ↑↓ move standby · ⌘O open · ⌘R reload. Per-cue Pause/Resume/Stop in the Active panel; broken cues are marked ⚠ with the reason; the standby line warns when GO will be ignored. Open… sends the picked path to the engine, so it only works when the engine can see the same path (same machine / shared mount). Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
 
 ## Show loading / hot reload
 
@@ -79,6 +81,23 @@ Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click 
 - Reloading the **same file** keeps running cues, matched by cue number (insert/renumber/edit freely); standby follows its cue number. Cues removed from the file fade out with their `fade_out`.
 - Loading a **different file** fades out everything running and resets standby to the first cue.
 - `osc_listen` / `audio_device` changes need an engine restart (logged as a warning).
+
+## Safety
+
+- **Second trigger** (`second_trigger` on any cue): what GO / a chain does when the cue is already running — `ignore` (default; standby still advances), `stop` (own fade-out), `hard_stop`, `restart`.
+- **Fade curves** (`curve` on audio and fade cues): `s_curve` (default), `equal_power`, `linear`.
+- **Pause** freezes audio (declicked), pre-waits, post-waits and fade/wait durations; elapsed time excludes the pause. Stopping a paused cue ends it at once (it's silent).
+- **Panic ×2**: Esc / panic fades everything over `panic_fade`; a second panic during that fade hard-stops.
+- **Broken cues** are flagged at load and shown in the UI before you fire them.
+
+```toml
+[[cue]]
+number = "2"
+type = "audio"
+file = "media/sting.wav"
+second_trigger = "restart"
+curve = "equal_power"
+```
 
 ## Cue types
 

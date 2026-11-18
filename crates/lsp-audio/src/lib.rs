@@ -5,7 +5,7 @@ pub mod decode;
 pub mod mixer;
 
 pub use decode::load_clip;
-pub use mixer::{AudioCmd, AudioEvent, Clip, Mixer, VoiceId};
+pub use mixer::{AudioCmd, AudioEvent, Clip, Curve, Mixer, VoiceId};
 
 use anyhow::{anyhow, bail, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

@@ -22,8 +22,9 @@
       <button id="next" title="Next cue (↓)">▼</button>
     </div>
     <div class="kill">
-      <button id="stop-all" class="stop" title="Stop all, using each cue's fade-out (Esc)">Stop all</button>
-      <button id="panic" class="panic" title="Clear timers and fade everything out">Panic</button>
+      <button id="pause-all" class="pause" title="Pause / resume everything (P)">Pause all</button>
+      <button id="stop-all" class="stop" title="Stop all, using each cue's fade-out">Stop all</button>
+      <button id="panic" class="panic" title="Fade everything out (Esc). Press again during the fade to hard-stop.">Panic</button>
     </div>
   </header>
 
@@ -76,7 +77,7 @@
       <input id="engine" spellcheck="false" autocomplete="off" />
     </form>
     <span id="conn-text" class="muted">offline</span>
-    <span class="keys muted">Space GO · Esc stop all · ↑↓ standby · ⌘O open · ⌘R reload</span>
+    <span class="keys muted">Space GO · Esc panic (×2 hard stop) · P pause all · ↑↓ standby · ⌘O open · ⌘R reload</span>
   </footer>
 
   <script src="app.js"></script>

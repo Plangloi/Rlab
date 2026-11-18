@@ -66,6 +66,9 @@ struct CueInfo {
     next: String,
     pre_wait: f32,
     post_wait: f32,
+    /// Why the cue would misbehave if fired ("" = fine).
+    problem: String,
+    second_trigger: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -89,11 +92,13 @@ fn resolve(addr: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("{addr}: no IPv4 address"))
 }
 
-/// Transport command: `go`, `stop [cue]`, `panic`, `goto cue`, `next`, `prev`, `reload`.
+/// Transport command: `go`, `stop [cue]`, `hardstop [cue]`, `pause [cue]`,
+/// `resume [cue]`, `panic`, `goto cue`, `next`, `prev`, `reload`.
 #[tauri::command]
 fn command(client: State<Shared>, cmd: String, arg: Option<String>) -> Result<(), String> {
     let path = match cmd.as_str() {
-        "go" | "stop" | "panic" | "goto" | "next" | "prev" | "reload" => format!("/lsp/{cmd}"),
+        "go" | "stop" | "hardstop" | "pause" | "resume" | "panic" | "goto" | "next" | "prev"
+        | "reload" => format!("/lsp/{cmd}"),
         _ => return Err(format!("unknown command {cmd}")),
     };
     let args = arg.into_iter().map(OscType::String).collect();
@@ -204,6 +209,8 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
                 next: arg_s(a.get(5)),
                 pre_wait: arg_f(a.get(6)),
                 post_wait: arg_f(a.get(7)),
+                problem: arg_s(a.get(8)),
+                second_trigger: arg_s(a.get(9)),
             },
         ),
         "/lsp/load" => app.emit(

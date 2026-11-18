@@ -7,11 +7,12 @@
 //! Out:
 //!   /lsp/show   name:s count:i path:s
 //!   /lsp/cue    idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f
+//!               problem:s second_trigger:s       (problem "" = cue is fine)
 //!   /lsp/state  standby:i  [idx:i phase:s elapsed:f duration:f]*
 //!   /lsp/load   status:s path:s message:s     (status: loading | ok | error)
 //!
 //! `standby` is the playhead index (-1 = end of list). `duration` -1 = unbounded
-//! (looping audio). `phase` is `pre_wait` | `running` | `stopping`.
+//! (looping audio). `phase` is `pre_wait` | `running` | `paused` | `stopping`.
 
 use lsp_core::{CueKind, Show};
 use rosc::{OscMessage, OscPacket, OscType};
@@ -94,7 +95,12 @@ fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
 }
 
 /// `/lsp/show` followed by one `/lsp/cue` per cue.
-pub fn cue_list(show: &Show, durations: &[f32], path: &str) -> Vec<OscMessage> {
+pub fn cue_list(
+    show: &Show,
+    durations: &[f32],
+    problems: &[Option<String>],
+    path: &str,
+) -> Vec<OscMessage> {
     let mut out = Vec::with_capacity(show.cues.len() + 1);
     out.push(msg(
         "/lsp/show",
@@ -116,6 +122,8 @@ pub fn cue_list(show: &Show, durations: &[f32], path: &str) -> Vec<OscMessage> {
                 OscType::String(c.next.as_str().into()),
                 OscType::Float(c.pre_wait),
                 OscType::Float(c.post_wait),
+                OscType::String(problems.get(i).cloned().flatten().unwrap_or_default()),
+                OscType::String(c.second_trigger.as_str().into()),
             ],
         ));
     }
@@ -223,7 +231,9 @@ duration = 2.5
         .unwrap();
         let d = durations(&show, |_| Some(10.0));
         assert_eq!(d, vec![9.0, -1.0, 2.5]);
-        let l = cue_list(&show, &d, "/x/show.toml");
+        let l = cue_list(&show, &d, &[None, Some("bad".into())], "/x/show.toml");
+        assert_eq!(l[2].args[8], OscType::String("bad".into()));
+        assert_eq!(l[3].args[8], OscType::String("".into()));
         assert_eq!(l[0].args[2], OscType::String("/x/show.toml".into()));
         assert_eq!(l.len(), 4);
         assert_eq!(l[3].args[3], OscType::String("wait".into()));

@@ -11,6 +11,7 @@
   --run: #2ecc71;
   --prewait: #3498db;
   --stopping: #e67e22;
+  --paused: #9b8cff;
   --stop: #e67e22;
   --panic: #e74c3c;
   color-scheme: dark;
@@ -100,7 +101,11 @@ button:disabled { opacity: .4; cursor: default; }
 .kill { display: flex; gap: 10px; }
 .kill button { height: 56px; padding: 0 18px; font-weight: 600; }
 .stop { border-color: var(--stop); color: var(--stop); }
-.panic { background: var(--panic); border-color: var(--panic); color: #fff; }
+.panic { background: var(--panic); border-color: var(--panic); color: #fff; min-width: 96px; }
+.panic.armed { background: #fff; color: var(--panic); animation: pulse .6s ease-in-out infinite alternate; }
+@keyframes pulse { to { background: #ffd6d1; } }
+.pause { border-color: var(--paused); color: var(--paused); min-width: 112px; }
+.pause.resume { background: var(--paused); color: #16112e; }
 
 /* ── Main ──────────────────────────────────────────────── */
 main {
@@ -204,6 +209,13 @@ tbody tr.live {
 tr.running, li.running { --phase: var(--run); }
 tr.pre_wait, li.pre_wait { --phase: var(--prewait); }
 tr.stopping, li.stopping { --phase: var(--stopping); }
+tr.paused, li.paused { --phase: var(--paused); }
+tr.broken .c-num { color: var(--panic); }
+tr.broken:not(.live):not(.standby) .c-state::before { content: "⚠"; color: var(--panic); }
+tr.broken td.name::after { content: " — " attr(data-problem); color: var(--panic); font-size: 12px; }
+.broken-count { color: var(--panic); }
+.standby .meta .warn { color: var(--panic); }
+.standby .meta .note { color: var(--standby); }
 tr.live .c-state::before { content: "●"; color: var(--phase); }
 
 tr.standby { box-shadow: inset 4px 0 0 var(--standby); }
@@ -259,6 +271,7 @@ tr.standby:not(.live) .c-state::before { content: "▶"; color: var(--standby); 
 .active .row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .active .row .t b { margin-right: 6px; }
 .active .row button { padding: 2px 8px; font-size: 12px; }
+.active .row button.pz { color: var(--paused); }
 .active .bar {
   height: 5px;
   margin: 8px 0 4px;

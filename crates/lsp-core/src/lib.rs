@@ -49,8 +49,48 @@ pub struct Cue {
     pub post_wait: f32,
     #[serde(default)]
     pub next: NextAction,
+    /// What a trigger does while this cue is already running.
+    #[serde(default)]
+    pub second_trigger: SecondTrigger,
     #[serde(flatten)]
     pub kind: CueKind,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecondTrigger {
+    /// Leave the running instance alone (standby still advances).
+    #[default]
+    Ignore,
+    /// Stop with the cue's own fade-out.
+    Stop,
+    /// Stop immediately.
+    HardStop,
+    /// Hard-stop the running instance and start again.
+    Restart,
+}
+
+impl SecondTrigger {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecondTrigger::Ignore => "ignore",
+            SecondTrigger::Stop => "stop",
+            SecondTrigger::HardStop => "hard_stop",
+            SecondTrigger::Restart => "restart",
+        }
+    }
+}
+
+/// Gain trajectory for fades.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FadeCurve {
+    Linear,
+    /// Gentle start and end.
+    #[default]
+    SCurve,
+    /// Constant loudness through crossfades.
+    EqualPower,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +117,8 @@ pub enum CueKind {
         /// Stop target when the fade reaches its level.
         #[serde(default)]
         stop: bool,
+        #[serde(default)]
+        curve: FadeCurve,
     },
     Stop {
         /// Cue number to stop. None = stop all.
@@ -118,6 +160,9 @@ pub struct AudioCue {
     pub end: Option<f32>,
     #[serde(default, rename = "loop")]
     pub looping: bool,
+    /// Curve for this cue's own fade_in / fade_out (and stops that use them).
+    #[serde(default)]
+    pub curve: FadeCurve,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,8 +178,15 @@ pub enum OscArg {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Go,
-    /// None = stop all.
+    /// None = stop all (each cue's own fade-out).
     Stop(Option<String>),
+    /// Stop immediately (declick only). None = all.
+    HardStop(Option<String>),
+    /// None = all.
+    Pause(Option<String>),
+    /// None = all.
+    Resume(Option<String>),
+    /// Fade everything out over `panic_fade`; a second panic during the fade hard-stops.
     Panic,
     Goto(String),
     Next,
@@ -165,6 +217,9 @@ impl Command {
         Some(match head.as_str() {
             "go" | "g" => Command::Go,
             "stop" | "s" => Command::Stop(arg),
+            "hardstop" | "hs" => Command::HardStop(arg),
+            "pause" => Command::Pause(arg),
+            "resume" => Command::Resume(arg),
             "panic" | "p" => Command::Panic,
             "goto" => Command::Goto(arg?),
             "next" | "n" => Command::Next,
@@ -219,6 +274,53 @@ impl Show {
 
     pub fn find(&self, number: &str) -> Option<usize> {
         self.cues.iter().position(|c| c.number == number)
+    }
+
+    /// Per-cue problems that would make the cue misbehave when fired
+    /// (None = fine). Media decode failures are added by the loader.
+    pub fn cue_problems(&self) -> Vec<Option<String>> {
+        let mut first = std::collections::HashMap::new();
+        self.cues
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut p = Vec::new();
+                if let Some(j) = first.insert(c.number.as_str(), i) {
+                    first.insert(c.number.as_str(), j);
+                    p.push(format!("duplicate cue number (also cue #{})", j + 1));
+                }
+                let target = match &c.kind {
+                    CueKind::Fade { target, .. } => Some(target),
+                    CueKind::Stop {
+                        target: Some(t), ..
+                    } => Some(t),
+                    _ => None,
+                };
+                if let Some(t) = target {
+                    match self.find(t) {
+                        None => p.push(format!("target cue {t} does not exist")),
+                        Some(j) if !matches!(self.cues[j].kind, CueKind::Audio(_)) => {
+                            if matches!(c.kind, CueKind::Fade { .. }) {
+                                p.push(format!("target cue {t} is not an audio cue"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let CueKind::Osc { host, path, .. } = &c.kind {
+                    let ok = host
+                        .rsplit_once(':')
+                        .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok());
+                    if !ok {
+                        p.push(format!("OSC host '{host}' is not host:port"));
+                    }
+                    if !path.starts_with('/') {
+                        p.push(format!("OSC path '{path}' must start with /"));
+                    }
+                }
+                (!p.is_empty()).then(|| p.join("; "))
+            })
+            .collect()
     }
 
     /// Non-fatal consistency problems (duplicate numbers, dangling targets).
@@ -325,6 +427,47 @@ target = "99"
         );
         assert_eq!(Command::parse("load"), None);
         assert_eq!(Command::parse("reload"), Some(Command::Reload));
+    }
+
+    #[test]
+    fn problems_per_cue() {
+        let s: Show = toml::from_str(
+            r#"
+name = "t"
+[[cue]]
+number = "1"
+type = "wait"
+duration = 1
+[[cue]]
+number = "1"
+type = "fade"
+target = "1"
+duration = 1
+[[cue]]
+number = "3"
+type = "osc"
+host = "nohost"
+path = "x"
+[[cue]]
+number = "4"
+type = "stop"
+"#,
+        )
+        .unwrap();
+        let p = s.cue_problems();
+        assert_eq!(p[0], None);
+        let p1 = p[1].as_deref().unwrap();
+        assert!(p1.contains("duplicate") && p1.contains("not an audio cue"), "{p1}");
+        assert!(p[2].as_deref().unwrap().contains("host:port"));
+        assert_eq!(p[3], None);
+        assert_eq!(s.cues[0].second_trigger, SecondTrigger::Ignore);
+    }
+
+    #[test]
+    fn transport_cmds() {
+        assert_eq!(Command::parse("hs"), Some(Command::HardStop(None)));
+        assert_eq!(Command::parse("pause 2"), Some(Command::Pause(Some("2".into()))));
+        assert_eq!(Command::parse("resume"), Some(Command::Resume(None)));
     }
 
     #[test]

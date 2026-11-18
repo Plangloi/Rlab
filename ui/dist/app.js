@@ -45,7 +45,32 @@ $("go").addEventListener("click", go);
 $("prev").addEventListener("click", () => send("prev"));
 $("next").addEventListener("click", () => send("next"));
 $("stop-all").addEventListener("click", () => send("stop"));
-$("panic").addEventListener("click", () => send("panic"));
+$("panic").addEventListener("click", panic);
+$("pause-all").addEventListener("click", togglePauseAll);
+
+/**
+ * The engine hard-stops on a second panic during its panic fade. Mirror that
+ * so the button can say so: armed from a panic until no cue is stopping any
+ * more (after a short grace for the engine's state to arrive).
+ */
+let panicAt = 0;
+let panicArmed = false;
+
+function panic() {
+  send("panic");
+  panicArmed = !panicArmed;
+  panicAt = performance.now();
+}
+
+function anyPhase(phase) {
+  for (const r of model.running.values()) if (r.phase === phase) return true;
+  return false;
+}
+
+function togglePauseAll() {
+  const live = [...model.running.values()].some((r) => r.phase === "running" || r.phase === "pre_wait");
+  send(!live && anyPhase("paused") ? "resume" : "pause");
+}
 $("open").addEventListener("click", openShow);
 $("reload").addEventListener("click", () => send("reload"));
 $("banner-close").addEventListener("click", () => ($("banner").hidden = true));
@@ -78,7 +103,12 @@ document.addEventListener("keydown", (e) => {
       break;
     case "Escape":
       e.preventDefault();
-      send("stop");
+      if (!e.repeat) panic();
+      break;
+    case "p":
+    case "P":
+      e.preventDefault();
+      if (!e.repeat) togglePauseAll();
       break;
     case "ArrowUp":
       e.preventDefault();
@@ -203,6 +233,13 @@ function renderList() {
   const path = model.show?.path ?? "";
   $("show-name").textContent = path ? model.show.name || "Untitled" : "—";
   $("cue-count").textContent = path ? `${model.show.count} cues` : "";
+  const broken = cues.filter((c) => c?.problem).length;
+  if (broken) {
+    const b = document.createElement("span");
+    b.className = "broken-count";
+    b.textContent = ` · ⚠ ${broken} broken`;
+    $("cue-count").append(b);
+  }
   $("show-file").textContent = baseName(path);
   $("show-file").title = path;
   $("reload").disabled = !path;
@@ -223,6 +260,11 @@ function renderList() {
       <td class="c-next"><span class="chain" title="${NEXT_TEXT[c.next] ?? c.next}">${NEXT_ICON[c.next] ?? ""}</span></td>`;
     tr.children[1].textContent = c.number;
     tr.children[2].textContent = c.name;
+    if (c.problem) {
+      tr.classList.add("broken");
+      tr.children[2].dataset.problem = c.problem;
+      tr.title = c.problem;
+    }
     tr.addEventListener("click", () => send("goto", c.number));
     tbody.appendChild(tr);
     rows[idx] = tr;
@@ -254,7 +296,19 @@ function renderStandby() {
     if (c.pre_wait) bits.push(`pre-wait ${fmt(c.pre_wait)}`);
     if (c.duration) bits.push(fmt(c.duration) === "∞" ? "loops" : fmt(c.duration));
     if (NEXT_TEXT[c.next]) bits.push(NEXT_TEXT[c.next]);
-    $("sb-meta").textContent = bits.join(" · ");
+    const meta = $("sb-meta");
+    meta.textContent = bits.join(" · ");
+    const r = model.running.get(model.standby);
+    if (r && r.phase !== "stopping") {
+      const what = {
+        ignore: "already running — GO will be ignored",
+        stop: "already running — GO will stop it",
+        hard_stop: "already running — GO will hard-stop it",
+        restart: "already running — GO will restart it",
+      }[c.second_trigger];
+      if (what) addMeta(meta, "note", what);
+    }
+    if (c.problem) addMeta(meta, "warn", `⚠ ${c.problem}`);
   } else {
     $("sb-number").textContent = "—";
     $("sb-name").textContent = model.show?.path ? "End of cue list" : "No show loaded";
@@ -263,13 +317,20 @@ function renderStandby() {
   $("go").disabled = !c;
 }
 
+function addMeta(meta, cls, text) {
+  const s = document.createElement("span");
+  s.className = cls;
+  s.textContent = ` · ${text}`;
+  meta.append(s);
+}
+
 function applyState() {
   rows.forEach((tr, idx) => {
     if (!tr) return;
     tr.classList.toggle("standby", idx === model.standby);
     const r = model.running.get(idx);
     tr.classList.toggle("live", !!r);
-    tr.classList.remove("running", "pre_wait", "stopping");
+    tr.classList.remove("running", "pre_wait", "stopping", "paused");
     if (r) tr.classList.add(r.phase);
     else tr.style.removeProperty("--p");
   });
@@ -288,20 +349,35 @@ function applyState() {
       const c = model.cues[idx];
       li = document.createElement("li");
       li.innerHTML = `
-        <div class="row"><span class="t"><b></b><span></span></span><button title="Stop this cue">Stop</button></div>
+        <div class="row"><span class="t"><b></b><span></span></span><button class="pz"></button><button class="st" title="Stop this cue (its own fade-out)">Stop</button></div>
         <div class="bar"><i></i></div>
         <div class="times"><span class="el"></span><span class="ph"></span><span class="rem"></span></div>`;
       li.querySelector("b").textContent = c?.number ?? idx;
       li.querySelector(".t span").textContent = c?.name ?? "";
-      li.querySelector("button").addEventListener("click", () => c && send("stop", c.number));
+      li.querySelector(".st").addEventListener("click", () => c && send("stop", c.number));
+      li.querySelector(".pz").addEventListener("click", () => {
+        const cur = model.running.get(idx);
+        if (c && cur) send(cur.phase === "paused" ? "resume" : "pause", c.number);
+      });
       activeItems.set(idx, li);
     }
     li.className = r.phase;
     li.querySelector(".ph").textContent = r.phase.replace("_", "-");
+    const pz = li.querySelector(".pz");
+    pz.textContent = r.phase === "paused" ? "Resume" : "Pause";
+    pz.hidden = r.phase === "stopping";
     li.querySelector(".bar").classList.toggle("inf", r.duration < 0);
     ul.appendChild(li); // keeps order sorted
   }
   $("active-empty").hidden = model.running.size > 0;
+
+  const pa = $("pause-all");
+  const live = [...model.running.values()].some((r) => r.phase === "running" || r.phase === "pre_wait");
+  const resume = !live && anyPhase("paused");
+  pa.textContent = resume ? "Resume all" : "Pause all";
+  pa.classList.toggle("resume", resume);
+  pa.disabled = !live && !resume;
+  renderStandby();
 }
 
 function onState(s) {
@@ -342,8 +418,17 @@ function frame() {
   $("conn").classList.toggle("off", !online);
   $("conn-text").textContent = online ? "connected" : "offline";
 
+  if (panicArmed && now - panicAt > 300 && !anyPhase("stopping")) panicArmed = false;
+  const armed = panicArmed;
+  const pb = $("panic");
+  if (pb.classList.contains("armed") !== armed) {
+    pb.classList.toggle("armed", armed);
+    pb.textContent = armed ? "Hard stop" : "Panic";
+  }
+
   for (const [idx, r] of model.running) {
-    const el = online ? r.elapsed + (now - r.at) / 1000 : r.elapsed;
+    const moving = online && r.phase !== "paused";
+    const el = moving ? r.elapsed + (now - r.at) / 1000 : r.elapsed;
     const p = r.duration > 0 ? Math.min(100, (el / r.duration) * 100) : 0;
     rows[idx]?.style.setProperty("--p", `${p}%`);
     const li = activeItems.get(idx);
