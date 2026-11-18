@@ -4,103 +4,157 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Show Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;600;700;800&amp;display=swap" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="transport">
-    <button id="go" class="go" title="GO (Space)">GO</button>
-    <div class="standby">
-      <div class="label">Standby</div>
-      <div class="standby-cue">
+  <div class="topbar">
+    <span id="prompt" class="prompt ug-only"></span>
+    <span class="logo pro-only" aria-hidden="true">LS</span>
+    <span id="show-name" class="show std-only">—</span>
+    <span id="show-file" class="path std-only"></span>
+    <span id="edit-badge" class="badge" hidden>EDITING</span>
+    <div class="clocks pro-only">
+      <div><span class="k">TIME OF DAY</span><span id="tod" class="v">--:--:--</span></div>
+      <button id="show-run-box" class="clock-btn" title="Time since the first GO of this show — click to reset"><span class="k">SHOW RUNNING</span><span id="show-run" class="v">00:00:00</span></button>
+    </div>
+    <div class="top-right">
+      <span id="uplink" class="uplink ug-only"></span>
+      <button id="theme-toggle" class="link" title="Switch theme">Theme</button>
+      <span id="dev-chip" class="chip-box pro-only" title="Audio output device"></span>
+      <span id="dsp-chip" class="chip-box pro-only" title="Audio callback load (worst in the last second)">DSP --</span>
+      <button id="new-show" class="link" title="Create a new show file">New…</button>
+      <button id="open" class="link" title="Open a show file (⌘O)">Open…</button>
+      <button id="reload" class="link" title="Reload the show file from disk (⌘R)">Reload</button>
+      <button id="edit-toggle" class="link strong" title="Edit mode (⌘E)">Edit</button>
+      <form id="engine-form" class="engine" title="Engine address — edit and press Enter to switch">
+        <span id="conn" class="dot off"></span>
+        <label for="engine">Engine</label>
+        <input id="engine" spellcheck="false" autocomplete="off" />
+      </form>
+    </div>
+  </div>
+
+  <header id="transport" class="transport">
+    <button id="go" class="go" aria-label="GO, fire standby cue">GO</button>
+    <div class="next">
+      <div class="label-row">
+        <span class="label" data-ug=">> ARMED // NEXT_CUE" data-pro="STANDBY">Next</span>
+        <span id="sb-type" class="type-badge pro-only"></span>
+      </div>
+      <div class="line">
         <span id="sb-number" class="num">—</span>
         <span id="sb-name" class="name">No show loaded</span>
       </div>
-      <div id="sb-meta" class="meta"></div>
+      <span id="sb-meta" class="detail"></span>
     </div>
-    <div class="nav">
-      <button id="prev" title="Previous cue (↑)">▲</button>
-      <button id="next" title="Next cue (↓)">▼</button>
-    </div>
-    <div class="kill">
-      <button id="pause-all" class="pause" title="Pause / resume everything (P)">Pause all</button>
-      <button id="stop-all" class="stop" title="Stop all, using each cue's fade-out">Stop all</button>
-      <button id="panic" class="panic" title="Fade everything out (Esc). Press again during the fade to hard-stop.">Panic</button>
+    <div class="controls">
+      <button id="prev" class="sq" aria-label="Previous cue (↑)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"></path></svg></button>
+      <button id="next" class="sq" aria-label="Next cue (↓)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+      <span class="divider" aria-hidden="true"></span>
+      <button id="pause-all" class="ctl" title="Pause / resume everything (P)">Pause all</button>
+      <button id="stop-all" class="ctl kill" title="Stop all, using each cue's fade-out" data-ug="KILL_ALL">Stop all</button>
+      <button id="panic" class="panic" title="Fade everything out (Esc). Press again during the fade to hard-stop.">PANIC</button>
     </div>
   </header>
 
-  <main>
-    <section class="list" aria-label="Cue list">
-      <div class="list-head">
-        <h1 id="show-name">—</h1>
-        <span id="cue-count" class="muted"></span>
-        <span id="show-file" class="file muted"></span>
-        <div class="file-actions">
-          <button id="new-show" title="Create a new show file">New…</button>
-          <button id="open" title="Open a show file (⌘O)">Open…</button>
-          <button id="reload" title="Reload the show file from disk (⌘R)">Reload</button>
-          <button id="edit-toggle" class="toggle" title="Edit mode: select cues, change them in the inspector (⌘E)">Edit</button>
+  <div id="edit-bar" class="edit-bar" role="toolbar" aria-label="Add and arrange cues" hidden>
+    <button class="add chip-audio" data-type="audio">+ AUDIO</button>
+    <button class="add chip-fade" data-type="fade">+ FADE</button>
+    <button class="add chip-stop" data-type="stop">+ STOP</button>
+    <button class="add chip-osc" data-type="osc">+ OSC</button>
+    <button class="add chip-wait" data-type="wait">+ WAIT</button>
+    <button class="add chip-midi" data-type="midi">+ MIDI</button>
+    <div class="right">
+      <button id="move-up" class="tool" title="Move the selected cue up">Move ↑</button>
+      <button id="move-down" class="tool" title="Move the selected cue down">Move ↓</button>
+      <button id="dup" class="tool" title="Duplicate the selected cue (⌘D)">Duplicate</button>
+      <button id="delete" class="tool del" title="Delete the selected cue (⌫, press twice)">Delete</button>
+    </div>
+  </div>
+
+  <div id="banner" class="banner" hidden>
+    <span id="banner-text"></span>
+    <pre id="banner-detail" hidden></pre>
+    <button id="banner-close" class="close" aria-label="Dismiss">×</button>
+  </div>
+
+  <div class="workspace">
+  <main class="list" aria-label="Cue list">
+    <table>
+      <thead>
+        <tr>
+          <th class="c-ph"><span class="sr">Playhead</span></th>
+          <th class="c-type">Type</th>
+          <th class="c-num" data-ug="ID" data-pro="Cue">#</th>
+          <th class="c-name">Name</th>
+          <th class="c-target">Target</th>
+          <th class="c-pre t" data-pro="Pre">Pre-wait</th>
+          <th class="c-state">State</th>
+          <th class="c-bar">Progress</th>
+          <th class="c-act t" data-ug="T">Action</th>
+          <th class="c-post t" data-pro="Post">Post-wait</th>
+          <th class="c-cont">Continue</th>
+        </tr>
+      </thead>
+      <tbody id="cues"></tbody>
+    </table>
+    <div id="empty" class="empty">Waiting for the engine…</div>
+    <div id="eof" class="eof ug-only"></div>
+  </main>
+  <aside id="traffic" class="traffic ug-only" aria-label="OSC traffic">
+    <span class="traffic-title">## OSC_TRAFFIC</span>
+    <div id="traffic-log" class="traffic-log" aria-live="off"></div>
+    <span class="traffic-prompt">&gt; <span class="cur">_</span></span>
+  </aside>
+  <aside id="console" class="console pro-only" aria-label="Active cues and outputs">
+    <div class="console-head"><h2>ACTIVE</h2><span id="console-count"></span></div>
+    <div id="console-active" class="console-active"></div>
+    <p id="console-empty" class="console-empty">Nothing running</p>
+    <div class="meter-card">
+      <div class="mc-head"><span class="k">MASTER OUT</span><span id="m-level" class="mono">-inf dBFS</span></div>
+      <div class="mc-body">
+        <div class="scale" aria-hidden="true"><span>0</span><span>−6</span><span>−12</span><span>−24</span><span>−48</span></div>
+        <div id="m-l" class="mbar" role="img" aria-label="Left channel level"><span class="mask"></span><span class="hold"></span></div>
+        <div id="m-r" class="mbar" role="img" aria-label="Right channel level"><span class="mask"></span><span class="hold"></span></div>
+        <div class="mstats">
+          <div><span>Peak</span><b id="m-peak" class="mono">-inf</b></div>
+          <div><span>Clips</span><b id="m-clips" class="mono">0</b></div>
+          <div><span>Remotes</span><b id="m-subs" class="mono">0</b></div>
+          <button id="m-reset" class="link" title="Reset peak and clip count">Reset</button>
         </div>
       </div>
-      <div id="edit-bar" class="edit-bar" hidden>
-        <select id="add-type" title="Add a cue after the selected one">
-          <option value="">+ Add cue…</option>
-          <option value="audio">Audio</option>
-          <option value="fade">Fade</option>
-          <option value="stop">Stop</option>
-          <option value="wait">Wait</option>
-          <option value="osc">OSC</option>
-          <option value="midi">MIDI</option>
-        </select>
-        <button id="dup" title="Duplicate the selected cue (⌘D)">Duplicate</button>
-        <button id="move-up" title="Move the selected cue up">Move ↑</button>
-        <button id="move-down" title="Move the selected cue down">Move ↓</button>
-        <button id="delete" class="danger" title="Delete the selected cue (⌫, press twice)">Delete</button>
-        <span class="muted hint">Click selects · double-click sets standby · edits save to the show file</span>
-      </div>
-      <div id="banner" class="banner" hidden>
-        <span id="banner-text"></span>
-        <pre id="banner-detail" hidden></pre>
-        <button id="banner-close" class="close" title="Dismiss">×</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th class="c-state"></th>
-              <th class="c-num">#</th>
-              <th>Name</th>
-              <th class="c-type">Type</th>
-              <th class="c-time">Pre-wait</th>
-              <th class="c-time">Duration</th>
-              <th class="c-next">Then</th>
-            </tr>
-          </thead>
-          <tbody id="cues"></tbody>
-        </table>
-        <div id="empty" class="empty">Waiting for the engine…</div>
-      </div>
-    </section>
+    </div>
+  </aside>
+  </div>
 
-    <aside class="active" aria-label="Inspector and active cues">
-      <section id="inspector" class="inspector" hidden>
-        <h2 id="insp-title">Inspector</h2>
-        <div id="insp-body"></div>
-      </section>
-      <h2>Active</h2>
-      <ul id="active"></ul>
-      <p id="active-empty" class="muted">Nothing running</p>
-    </aside>
-  </main>
+  <section id="inspector" class="inspector" aria-label="Inspector" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="basics" aria-selected="true">Basics</button>
+      <button role="tab" data-tab="type" id="tab-type" aria-selected="false">Audio</button>
+      <button role="tab" data-tab="triggers" aria-selected="false">Triggers</button>
+      <span id="insp-status" class="status-note">Saved to show file on Enter</span>
+    </div>
+    <div id="insp-body" class="grid"></div>
+  </section>
+
+  <aside id="drawer" class="drawer" aria-label="Running cues" hidden>
+    <div class="drawer-head"><span>Running</span><button id="drawer-close" class="link" aria-label="Close">×</button></div>
+    <ul id="active"></ul>
+    <p id="active-empty" class="muted">Nothing running</p>
+  </aside>
 
   <footer class="status">
-    <span id="conn" class="conn off" title="Engine connection"></span>
-    <form id="engine-form">
-      <label for="engine">Engine</label>
-      <input id="engine" spellcheck="false" autocomplete="off" />
-    </form>
-    <span id="conn-text" class="muted">offline</span>
-    <span class="keys muted">Space GO · Esc panic (×2 hard stop) · P pause all · ↑↓ standby · ⌘O open · ⌘R reload</span>
+    <span id="pro-status" class="pro-only"></span>
+    <span class="pro-keys pro-only"><span><kbd>Space</kbd> GO</span><span><kbd>Esc</kbd> Panic</span><span><kbd>P</kbd> Pause</span><span><kbd>↑↓</kbd> Standby</span><span><kbd>⌘E</kbd> Edit</span></span>
+    <button id="running-toggle" class="run-count not-pro" title="Show running cues (pause / stop each)"><span class="dot"></span><span id="running-count">0 running</span></button>
+    <span id="cue-count" class="muted not-pro"></span>
+    <span id="broken-count" class="broken" hidden></span>
+    <span class="keys muted not-pro" data-ug="[SPACE] GO   [ESC] PANIC (x2 = HARD)   [P] PAUSE   [↑↓] SELECT">Space GO · Esc panic (×2 hard stop) · P pause all · ↑↓ standby · ⌘E edit</span>
+    <span class="tagline ug-only">// lock-free · 0 alloc in callback · 128 voices preallocated</span>
   </footer>
+  <div class="scan ug-only" aria-hidden="true"></div>
 
   <script src="app.js"></script>
   <script src="editor.js"></script>

@@ -1,25 +1,20 @@
-// Edit mode: select cues, change them in the inspector, add / duplicate /
-// move / delete. Every change is an edit request to the engine, which writes
-// the show file and sends the updated cue list back; nothing is edited
-// locally, so all connected UIs stay in sync.
+// Edit mode: select cues, change them in the bottom inspector, add /
+// duplicate / move / delete. Every change is an edit request to the engine,
+// which writes the show file and sends the updated cue list back; nothing is
+// edited locally, so all connected UIs stay in sync.
 "use strict";
 
-const editor = { on: false, selected: null /* cue number */ };
+const editor = { on: false, selected: null /* cue number */, tab: "basics" };
 try {
   editor.on = localStorage.getItem("lsp.editMode") === "1";
 } catch {
-  /* storage unavailable: default to show mode */
+  /* storage unavailable: default to run mode */
 }
 
+const TYPE_LABEL = { audio: "Audio", fade: "Fade", stop: "Stop", osc: "OSC", midi: "MIDI", wait: "Wait" };
+
 const OPTS = {
-  type: [
-    ["audio", "Audio"],
-    ["fade", "Fade"],
-    ["stop", "Stop"],
-    ["wait", "Wait"],
-    ["osc", "OSC"],
-    ["midi", "MIDI"],
-  ],
+  type: Object.entries(TYPE_LABEL),
   next: [
     ["do_nothing", "Do not continue"],
     ["auto_continue", "Auto-continue"],
@@ -27,7 +22,7 @@ const OPTS = {
   ],
   second_trigger: [
     ["ignore", "Ignore"],
-    ["stop", "Stop (fade out)"],
+    ["stop", "Stop"],
     ["hard_stop", "Hard stop"],
     ["restart", "Restart"],
   ],
@@ -38,51 +33,63 @@ const OPTS = {
   ],
 };
 
-// [key, label, kind, options]. `def`: value that means "default" — sent as
-// null so the key is dropped from the file. `optional`: blank = null.
-const COMMON_FIELDS = [
-  ["number", "Number", "text"],
-  ["name", "Name", "text"],
-  ["type", "Type", "select"],
-  ["pre_wait", "Pre-wait (s)", "num", { def: 0, min: 0 }],
-  ["next", "Then", "select", { def: "do_nothing" }],
-  ["post_wait", "Post-wait (s)", "num", { def: 0, min: 0, when: (d) => d.next === "auto_continue" }],
-  ["second_trigger", "If running", "select", { def: "ignore" }],
-];
-
-const TYPE_FIELDS = {
-  audio: [
-    ["file", "File", "file"],
-    ["gain_db", "Level (dB)", "num", { def: 0 }],
-    ["fade_in", "Fade in (s)", "num", { def: 0, min: 0 }],
-    ["fade_out", "Fade out (s)", "num", { def: 0, min: 0 }],
-    ["start", "Start at (s)", "num", { def: 0, min: 0 }],
-    ["end", "End at (s)", "num", { optional: true, min: 0, placeholder: "end of file" }],
-    ["loop", "Loop", "bool"],
-    ["curve", "Fade curve", "select", { def: "s_curve" }],
-  ],
-  fade: [
-    ["target", "Target cue", "target", { audioOnly: true }],
-    ["duration", "Duration (s)", "num", { min: 0 }],
-    ["gain_db", "To level (dB)", "num", { optional: true, placeholder: "silence" }],
-    ["stop", "Stop when done", "bool"],
-    ["curve", "Curve", "select", { def: "s_curve" }],
-  ],
-  stop: [
-    ["target", "Target cue", "target", { allowAll: true }],
-    ["fade", "Fade (s)", "num", { def: 0, min: 0 }],
-  ],
-  wait: [["duration", "Duration (s)", "num", { min: 0 }]],
-  osc: [
-    ["host", "Host:port", "text"],
-    ["path", "Address", "text"],
-    ["args", "Arguments", "args", { placeholder: '1 2.5 "two words" true' }],
-  ],
-  midi: [
-    ["port", "Port (contains)", "text"],
-    ["bytes", "Bytes (hex)", "bytes", { placeholder: "90 3C 7F" }],
-  ],
+// Field: [key, label, kind, options]. kind: text | num | seg | select |
+// target | bool | file | args | bytes. Options: span (grid columns), def
+// (value meaning "default", sent as null so the key leaves the file),
+// optional (blank = null), min, placeholder.
+const F = {
+  number: ["number", "Number", "text"],
+  name: ["name", "Name", "text", { span: 3 }],
+  pre_wait: ["pre_wait", "Pre-wait", "num", { def: 0, min: 0 }],
+  post_wait: ["post_wait", "Post-wait", "num", { def: 0, min: 0 }],
+  next: ["next", "Continue", "seg", { span: 3, def: "do_nothing" }],
+  type: ["type", "Type", "select", { span: 2 }],
+  second_trigger: ["second_trigger", "If GO hits this cue while it is running", "seg", { span: 4, def: "ignore" }],
+  curve: ["curve", "Fade curve", "seg", { span: 3, def: "s_curve" }],
 };
+
+/** Basics: the design's first row (number, name, main field) and timing row. */
+function basicsFields(type) {
+  const main = {
+    audio: ["file", "File", "file", { span: 2 }],
+    fade: ["target", "Target cue", "target", { span: 2, audioOnly: true }],
+    stop: ["target", "Target cue", "target", { span: 2, allowAll: true }],
+    osc: ["host", "Host:port", "text", { span: 2 }],
+    midi: ["port", "Port (name contains)", "text", { span: 2 }],
+    wait: ["duration", "Duration (s)", "num", { span: 2, min: 0 }],
+  }[type];
+  const third = {
+    audio: ["gain_db", "Gain dB", "num", { def: 0 }],
+    fade: ["duration", "Duration (s)", "num", { min: 0 }],
+    stop: ["fade", "Fade (s)", "num", { def: 0, min: 0 }],
+    osc: ["path", "Address", "text"],
+  }[type];
+  return [F.number, F.name, main, F.pre_wait, F.post_wait, third ?? null, F.next].filter((f) => f !== undefined);
+}
+
+/** The type tab: everything else that type has. */
+function typeFields(type) {
+  const rest = {
+    audio: [
+      ["fade_in", "Fade in (s)", "num", { def: 0, min: 0 }],
+      ["fade_out", "Fade out (s)", "num", { def: 0, min: 0 }],
+      ["start", "Start at (s)", "num", { def: 0, min: 0 }],
+      ["end", "End at (s)", "num", { optional: true, min: 0, placeholder: "end of file" }],
+      ["loop", "Loop", "bool"],
+      F.curve,
+    ],
+    fade: [
+      ["gain_db", "To level (dB)", "num", { optional: true, placeholder: "silence" }],
+      ["stop", "Stop target when done", "bool", { span: 2 }],
+      F.curve,
+    ],
+    stop: [],
+    osc: [["args", "Arguments", "args", { span: 4, placeholder: '1 2.5 "two words" true' }]],
+    midi: [["bytes", "Bytes (hex)", "bytes", { span: 4, placeholder: "90 3C 7F" }]],
+    wait: [],
+  }[type];
+  return [F.type, ...(rest ?? [])];
+}
 
 // ── Mode & selection ──────────────────────────────────────
 
@@ -94,8 +101,9 @@ function setEditMode(on) {
     /* ignore */
   }
   document.body.classList.toggle("editing", on);
-  $("edit-toggle").classList.toggle("on", on);
+  $("edit-badge").hidden = !on;
   $("edit-bar").hidden = !on;
+  $("edit-toggle").textContent = on ? "Done" : "Edit";
   renderEmpty();
   editorAfterRender();
 }
@@ -121,7 +129,7 @@ function editorAfterRender() {
   rows.forEach((tr, i) => tr?.classList.toggle("selected", i === sel));
   const has = sel >= 0;
   const canEdit = editor.on && !!model.show?.path;
-  $("add-type").disabled = !canEdit;
+  document.querySelectorAll("#edit-bar .add").forEach((b) => (b.disabled = !canEdit));
   $("dup").disabled = !canEdit || !has;
   $("move-up").disabled = !canEdit || !has || sel === 0;
   $("move-down").disabled = !canEdit || !has || sel >= model.cues.length - 1;
@@ -135,6 +143,8 @@ function editorAfterRender() {
 function sendEdit(req) {
   if (!model.show?.path) return showBanner("error", "Open or create a show first");
   req.rev = model.show.rev;
+  const what = req.fields ? ` ${Object.keys(req.fields).join(",")}` : req.type ? ` ${req.type}` : "";
+  logTraffic(`/lsp/edit ${req.op}${req.idx != null ? ` #${req.idx}` : ""}${what}`, "l-edit");
   invoke("edit", { req }).catch((e) => showBanner("error", "Edit failed", String(e)));
 }
 
@@ -144,6 +154,7 @@ function update(idx, fields) {
 
 listen("lsp:edit", ({ payload: r }) => {
   if (!r) return;
+  logTraffic(`<- /lsp/edit/reply ${r.status} ${r.message ?? r.path ?? ""}`, r.status === "ok" ? "l-edit" : "l-err");
   if (r.status === "ok") {
     if (r.number) editor.selected = r.number;
     if (r.op === "new") setEditMode(true);
@@ -165,19 +176,18 @@ async function newShow() {
   }
 }
 
-$("add-type").addEventListener("change", (e) => {
-  const type = e.target.value;
-  e.target.value = "";
-  e.target.blur();
-  if (!type) return;
+function addCue(type) {
   const sel = selectedIdx();
   const after = sel >= 0 ? sel : model.cues.length ? model.cues.length - 1 : null;
   const fields = {};
   // A new fade / stop targets the selected audio cue.
   const selCue = model.cues[sel];
   if ((type === "fade" || type === "stop") && selCue?.kind === "audio") fields.target = selCue.number;
+  editor.tab = "basics";
   sendEdit({ op: "add", after, type, fields });
-});
+}
+
+document.querySelectorAll("#edit-bar .add").forEach((b) => b.addEventListener("click", () => addCue(b.dataset.type)));
 
 $("dup").addEventListener("click", () => {
   const i = selectedIdx();
@@ -221,8 +231,9 @@ function deleteSelected() {
 $("delete").addEventListener("click", deleteSelected);
 
 document.addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
   if (!editor.on) {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "e" && model.show?.path) {
+    if ((e.metaKey || e.ctrlKey) && k === "e" && model.show?.path) {
       e.preventDefault();
       setEditMode(true);
     }
@@ -230,7 +241,6 @@ document.addEventListener("keydown", (e) => {
   }
   const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement;
   if (e.metaKey || e.ctrlKey) {
-    const k = e.key.toLowerCase();
     if (k === "e") {
       e.preventDefault();
       setEditMode(false);
@@ -248,6 +258,13 @@ document.addEventListener("keydown", (e) => {
 
 // ── Inspector ─────────────────────────────────────────────
 
+document.querySelectorAll(".tabs [role=tab]").forEach((t) =>
+  t.addEventListener("click", () => {
+    editor.tab = t.dataset.tab;
+    renderInspector(true);
+  }),
+);
+
 const fmtNum = (v) => (v == null ? "" : String(Math.round(v * 1000) / 1000));
 
 function parseArgs(text) {
@@ -263,7 +280,9 @@ function parseArgs(text) {
 }
 
 const fmtArgs = (a) =>
-  (a || []).map((x) => (typeof x === "string" && (/\s/.test(x) || x === "" || /^[-\d.]+$|^(true|false)$/.test(x)) ? `"${x}"` : String(x))).join(" ");
+  (a || [])
+    .map((x) => (typeof x === "string" && (/\s/.test(x) || x === "" || /^[-\d.]+$|^(true|false)$/.test(x)) ? `"${x}"` : String(x)))
+    .join(" ");
 
 function parseBytes(text) {
   const out = [];
@@ -277,32 +296,71 @@ function parseBytes(text) {
 
 const fmtBytes = (b) => (b || []).map((x) => x.toString(16).toUpperCase().padStart(2, "0")).join(" ");
 
-function control(f, d, idx) {
-  const [key, , kind, o = {}] = f;
+/** Build one field (label + control). Returns the wrapper element. */
+function field(f, d, idx) {
+  const [key, labelText, kind, o = {}] = f;
   const v = d[key];
-  let el;
   const commit = (value) => update(idx, { [key]: value });
+  const wrap = document.createElement("div");
+  wrap.className = `f${o.span ? ` s${o.span}` : ""}`;
+  const id = `insp-${key}`;
+  let el;
 
-  if (kind === "select") {
-    el = document.createElement("select");
-    for (const [val, text] of OPTS[key]) el.add(new Option(text, val));
-    el.value = v ?? o.def ?? "";
-    el.addEventListener("change", () => commit(o.def !== undefined && el.value === o.def ? null : el.value));
-  } else if (kind === "target") {
-    el = document.createElement("select");
-    el.add(new Option(o.allowAll ? "(all cues)" : "(choose a cue)", ""));
-    model.cues.forEach((c) => {
-      if (!c || c.number === d.number || (o.audioOnly && c.kind !== "audio")) return;
-      el.add(new Option(`${c.number} ${c.name || ""}`.trim(), c.number));
-    });
-    if (v && ![...el.options].some((op) => op.value === v)) el.add(new Option(`${v} (missing)`, v));
-    el.value = v ?? "";
-    el.addEventListener("change", () => commit(el.value === "" ? (o.allowAll ? null : "") : el.value));
-  } else if (kind === "bool") {
+  if (kind === "seg") {
+    const lbl = document.createElement("span");
+    lbl.className = "lbl";
+    lbl.id = `${id}-l`;
+    lbl.textContent = labelText;
+    const group = document.createElement("div");
+    group.className = "seg";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-labelledby", lbl.id);
+    const cur = v ?? o.def;
+    for (const [val, text] of OPTS[key]) {
+      const b = document.createElement("button");
+      b.textContent = text;
+      b.setAttribute("aria-pressed", String(val === cur));
+      b.addEventListener("click", () => val !== cur && commit(o.def !== undefined && val === o.def ? null : val));
+      group.append(b);
+    }
+    wrap.append(lbl, group);
+    return wrap;
+  }
+
+  if (kind === "bool") {
+    wrap.classList.add("check");
     el = document.createElement("input");
     el.type = "checkbox";
+    el.id = id;
     el.checked = !!v;
-    el.addEventListener("change", () => commit(el.checked ? true : null));
+    el.addEventListener("change", () => {
+      commit(el.checked ? true : null);
+      el.blur(); // so the next Space is GO, not a toggle
+    });
+    const label = document.createElement("label");
+    label.htmlFor = id;
+    label.textContent = labelText;
+    wrap.append(el, label);
+    return wrap;
+  }
+
+  if (kind === "select" || kind === "target") {
+    el = document.createElement("select");
+    if (kind === "select") {
+      for (const [val, text] of OPTS[key]) el.add(new Option(text, val));
+      el.value = v ?? "";
+      el.addEventListener("change", () => commit(el.value));
+    } else {
+      el.add(new Option(o.allowAll ? "(all cues)" : "(choose a cue)", ""));
+      model.cues.forEach((c) => {
+        if (!c || c.number === d.number || (o.audioOnly && c.kind !== "audio")) return;
+        el.add(new Option(`${c.number} ${c.name || ""}`.trim(), c.number));
+      });
+      if (v && ![...el.options].some((op) => op.value === v)) el.add(new Option(`${v} (missing)`, v));
+      el.value = v ?? "";
+      el.addEventListener("change", () => commit(el.value === "" ? (o.allowAll ? null : "") : el.value));
+    }
+    el.addEventListener("change", () => el.blur());
   } else if (kind === "num") {
     el = document.createElement("input");
     el.type = "number";
@@ -341,33 +399,12 @@ function control(f, d, idx) {
       if (key === "number" && el.value.trim() === "") return void (el.value = v ?? "");
       commit(key === "number" ? el.value.trim() : el.value);
     });
-    if (kind === "file") {
-      const wrap = document.createElement("div");
-      wrap.className = "with-btn";
-      el.placeholder = "media/file.wav";
-      const b = document.createElement("button");
-      b.textContent = "Browse…";
-      b.addEventListener("click", async () => {
-        const path = model.show?.path || "";
-        const dir = path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
-        try {
-          const picked = await invoke("pick_media", { dir: dir || null });
-          if (picked) commit(picked);
-        } catch (e) {
-          showBanner("error", "Could not choose file", String(e));
-        }
-      });
-      el.dataset.key = key;
-      wrap.append(el, b);
-      return wrap;
-    }
   }
+
+  el.id = id;
   el.dataset.key = key;
-  // Checkboxes and dropdowns let go of focus once committed, so the next
-  // Space fires GO instead of toggling / opening the control.
-  if (el.tagName === "SELECT" || el.type === "checkbox") el.addEventListener("change", () => el.blur());
-  // Enter commits text-ish inputs (change fires on blur otherwise).
-  if (el.tagName === "INPUT" && el.type !== "checkbox") {
+  if (el.tagName === "INPUT") {
+    // Enter commits (change fires on blur otherwise); Esc reverts.
     el.addEventListener("keydown", (e) => {
       if (e.key === "Enter") el.blur();
       if (e.key === "Escape") {
@@ -376,7 +413,31 @@ function control(f, d, idx) {
       }
     });
   }
-  return el;
+  const label = document.createElement("label");
+  label.htmlFor = id;
+  label.textContent = labelText;
+  if (kind === "file") {
+    el.placeholder = "media/file.wav";
+    const row = document.createElement("div");
+    row.className = "with-btn";
+    const b = document.createElement("button");
+    b.textContent = "Browse…";
+    b.addEventListener("click", async () => {
+      const path = model.show?.path || "";
+      const dir = path.slice(0, Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")));
+      try {
+        const picked = await invoke("pick_media", { dir: dir || null });
+        if (picked) commit(picked);
+      } catch (e) {
+        showBanner("error", "Could not choose file", String(e));
+      }
+    });
+    row.append(el, b);
+    wrap.append(label, row);
+  } else {
+    wrap.append(label, el);
+  }
+  return wrap;
 }
 
 let inspectorKey = "";
@@ -391,50 +452,42 @@ function renderInspector(force = false) {
   if (!editor.on) return;
   const idx = selectedIdx();
   const c = model.cues[idx];
-  const key = c ? `${model.show?.rev}:${idx}:${JSON.stringify(c.data)}:${c.problem}` : "none";
+  const d = c?.data || {};
+  const type = d.type ?? c?.kind;
+  const key = c ? `${model.show?.rev}:${idx}:${editor.tab}:${JSON.stringify(d)}:${c.problem}` : `none:${model.cues.length}`;
   if (!force && key === inspectorKey) return;
   inspectorKey = key;
+
+  $("tab-type").textContent = TYPE_LABEL[type] ?? "Type";
+  document.querySelectorAll(".tabs [role=tab]").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === editor.tab)));
+  const status = $("insp-status");
+  status.textContent = c?.problem ? `⚠ ${c.problem}` : "Saved to show file on Enter";
+  status.classList.toggle("warn", !!c?.problem);
 
   const body = $("insp-body");
   const focused = body.contains(document.activeElement) ? document.activeElement.dataset.key : null;
   body.textContent = "";
   if (!c) {
-    $("insp-title").textContent = "Inspector";
     const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = model.cues.length ? "Select a cue to edit it." : "Add a cue to get started.";
+    p.className = "hint";
+    p.textContent = model.cues.length ? "Select a cue to edit it." : "Add a cue with the buttons above.";
     body.append(p);
     return;
   }
-  const d = c.data || {};
-  $("insp-title").textContent = `Cue ${c.number} · ${d.type ?? c.kind}`;
-  if (c.problem) {
-    const p = document.createElement("div");
-    p.className = "problem";
-    p.textContent = `⚠ ${c.problem}`;
-    body.append(p);
-  }
-  const fields = [...COMMON_FIELDS, null, ...(TYPE_FIELDS[d.type] || [])];
+  const fields =
+    editor.tab === "basics" ? basicsFields(type) : editor.tab === "type" ? typeFields(type) : [F.second_trigger];
   for (const f of fields) {
     if (f === null) {
-      const s = document.createElement("div");
-      s.className = "sep";
-      body.append(s);
+      body.append(document.createElement("div")); // keeps the design's grid rhythm
       continue;
     }
-    if (f[3]?.when && !f[3].when(d)) continue;
-    const row = document.createElement("div");
-    row.className = "f";
-    const label = document.createElement("label");
-    label.textContent = f[1];
-    const ctl = control(f, d, idx);
-    const input = ctl.matches?.("input,select") ? ctl : ctl.querySelector("input,select");
-    if (input) {
-      input.id = `insp-${f[0]}`;
-      label.htmlFor = input.id;
-    }
-    row.append(label, ctl);
-    body.append(row);
+    body.append(field(f, d, idx));
+  }
+  if (editor.tab === "type" && fields.length === 1) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = `Nothing else to set for ${TYPE_LABEL[type]} cues.`;
+    body.append(p);
   }
   if (focused) body.querySelector(`[data-key="${focused}"]`)?.focus();
 }

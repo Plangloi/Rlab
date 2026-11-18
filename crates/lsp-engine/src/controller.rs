@@ -833,6 +833,16 @@ impl Controller {
     }
 
     fn send_cue_list(&self, addr: std::net::SocketAddr) {
+        self.subs.send_to(
+            addr,
+            feedback::engine_info(
+                &self.audio.device_name,
+                self.audio.sample_rate,
+                self.audio.channels,
+                lsp_audio::mixer::MAX_VOICES,
+                self.watch,
+            ),
+        );
         for m in self.cue_list() {
             self.subs.send_to(addr, m);
         }
@@ -1068,6 +1078,8 @@ impl Controller {
         running.sort_by_key(|r| r.idx);
         let standby = (self.playhead < self.show.cues.len()).then_some(self.playhead);
         self.subs.broadcast(feedback::state(standby, &running));
+        let meters = self.audio.meters.take();
+        self.subs.broadcast(feedback::meter(&meters, self.subs.len()));
         self.last_push = Instant::now();
         self.dirty = false;
     }

@@ -12,6 +12,8 @@
 //!   /lsp/edit/reply  json:s   (to the editing client only)
 //!   /lsp/state  standby:i  [idx:i phase:s elapsed:f duration:f]*
 //!   /lsp/load   status:s path:s message:s     (status: loading | ok | error)
+//!   /lsp/meter  peak_l:f peak_r:f clips:i load:f subs:i   (linear peaks since last push)
+//!   /lsp/engine device:s rate:i channels:i max_voices:i watch:i   (on subscribe)
 //!
 //! `standby` is the playhead index (-1 = end of list). `duration` -1 = unbounded
 //! (looping audio). `phase` is `pre_wait` | `running` | `paused` | `stopping`.
@@ -58,6 +60,10 @@ impl Subscribers {
 
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.clients.len()
     }
 
     pub fn send_to(&self, addr: SocketAddr, msg: OscMessage) {
@@ -135,6 +141,32 @@ pub fn cue_list(show: &Show, durations: &[f32], meta: &ListMeta) -> Vec<OscMessa
         ));
     }
     out
+}
+
+pub fn meter(m: &lsp_audio::MeterReading, subs: usize) -> OscMessage {
+    msg(
+        "/lsp/meter",
+        vec![
+            OscType::Float(m.peak[0]),
+            OscType::Float(m.peak[1]),
+            OscType::Int(m.clips as i32),
+            OscType::Float(m.load),
+            OscType::Int(subs as i32),
+        ],
+    )
+}
+
+pub fn engine_info(device: &str, rate: u32, channels: u16, max_voices: usize, watch: bool) -> OscMessage {
+    msg(
+        "/lsp/engine",
+        vec![
+            OscType::String(device.into()),
+            OscType::Int(rate as i32),
+            OscType::Int(channels as i32),
+            OscType::Int(max_voices as i32),
+            OscType::Int(watch as i32),
+        ],
+    )
 }
 
 pub fn edit_reply(json: String) -> OscMessage {

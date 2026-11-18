@@ -84,6 +84,26 @@ struct Running {
 }
 
 #[derive(Serialize, Clone)]
+struct MeterInfo {
+    /// Linear peaks since the previous meter message (1.0 = 0 dBFS).
+    peak: [f32; 2],
+    clips: i32,
+    /// Audio callback load, 0..1.
+    load: f32,
+    /// Feedback clients subscribed to the engine.
+    subs: i32,
+}
+
+#[derive(Serialize, Clone)]
+struct EngineInfo {
+    device: String,
+    rate: i32,
+    channels: i32,
+    max_voices: i32,
+    watch: bool,
+}
+
+#[derive(Serialize, Clone)]
 struct StateInfo {
     standby: i32,
     running: Vec<Running>,
@@ -272,6 +292,25 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
                 problem: arg_s(a.get(8)),
                 second_trigger: arg_s(a.get(9)),
                 data: serde_json::from_str(&arg_s(a.get(10))).unwrap_or_default(),
+            },
+        ),
+        "/lsp/meter" => app.emit(
+            "lsp:meter",
+            MeterInfo {
+                peak: [arg_f(a.first()), arg_f(a.get(1))],
+                clips: arg_i(a.get(2)),
+                load: arg_f(a.get(3)),
+                subs: arg_i(a.get(4)),
+            },
+        ),
+        "/lsp/engine" => app.emit(
+            "lsp:engine",
+            EngineInfo {
+                device: arg_s(a.first()),
+                rate: arg_i(a.get(1)),
+                channels: arg_i(a.get(2)),
+                max_voices: arg_i(a.get(3)),
+                watch: arg_i(a.get(4)) != 0,
             },
         ),
         "/lsp/edit/reply" => app.emit(

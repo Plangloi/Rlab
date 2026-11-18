@@ -62,6 +62,8 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 | `/lsp/cue` | `idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f problem:s second_trigger:s data:s` (`data` = the cue as JSON) |
 | `/lsp/state` | `standby:i` then `[idx:i phase:s elapsed:f duration:f]` per active cue |
 | `/lsp/load` | `status:s path:s message:s` — `loading` · `ok` · `error` |
+| `/lsp/meter` | `peak_l:f peak_r:f clips:i load:f subs:i` — linear output peaks and clip count since the previous message, worst audio-callback load (0–1), feedback clients; sent with every state push |
+| `/lsp/engine` | `device:s rate:i channels:i max_voices:i watch:i` — on subscribe |
 
 `standby` = -1 at end of list. `duration` = -1 for looping audio. `phase` = `pre_wait` · `running` · `paused` · `stopping`. `problem` is empty for a healthy cue, otherwise why it would misbehave (missing media, missing/non-audio target, bad OSC host, duplicate number).
 
@@ -72,7 +74,7 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 cd ui/src-tauri && cargo run --release              # UI; --engine host:port or LSP_ENGINE to target a remote engine
 ```
 
-Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby, Open… / Reload with load status. Keys: Space GO · Esc panic (twice = hard stop) · P pause/resume all · ↑↓ move standby · ⌘O open · ⌘R reload. Per-cue Pause/Resume/Stop in the Active panel; broken cues are marked ⚠ with the reason; the standby line warns when GO will be ignored. Open… sends the picked path to the engine, so it only works when the engine can see the same path (same machine / shared mount). Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
+Three themes (top bar **Theme**, remembered per machine): **Standard**; **Underground** — a terminal look with ASCII progress bars, cue STATE column and a live OSC_TRAFFIC log of what the UI sends and receives; **Pro** — a broadcast console with time-of-day and show-running clocks, device / DSP-load chips, an Active panel and a MASTER OUT meter (real engine levels: peak, peak hold, clips, remotes). Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click to set standby, Open… / Reload with load status. Keys: Space GO · Esc panic (twice = hard stop) · P pause/resume all · ↑↓ move standby · ⌘O open · ⌘R reload. Per-cue Pause/Resume/Stop in the Active panel; broken cues are marked ⚠ with the reason; the standby line warns when GO will be ignored. Open… sends the picked path to the engine, so it only works when the engine can see the same path (same machine / shared mount). Front end is static HTML/JS in `ui/dist` (no npm). For a `.app` bundle: `cargo install tauri-cli --version '^2' && cd ui/src-tauri && cargo tauri build`.
 
 ## Show loading / hot reload
 
@@ -142,6 +144,7 @@ See `shows/demo.toml`.
 - [x] Show load over OSC, hot reload of show file, file watcher
 - [x] Tauri UI: cue list, GO, progress, stop/panic over OSC
 - [x] Cue editing (add / update / delete / duplicate / move) over OSC + UI inspector
-- [ ] UI: level meters, drag-to-reorder, multi-select, undo
+- [x] Output level meters (lock-free peaks from the audio callback)
+- [ ] UI: drag-to-reorder, multi-select, undo
 - [ ] Group cues, playlist mode, cue edit over OSC
 - [ ] Streaming decode for long files (> RAM budget)
