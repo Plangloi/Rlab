@@ -24,3 +24,6 @@ crossbeam-channel.workspace = true
 clap.workspace = true
 env_logger.workspace = true
 ctrlc.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

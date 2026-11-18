@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +140,11 @@ pub enum Command {
     Next,
     Prev,
     Status,
+    /// Register a feedback client (renew every few seconds; expires otherwise).
+    Subscribe(SocketAddr),
+    Unsubscribe(SocketAddr),
+    /// Re-send the full cue list to one client.
+    CueList(SocketAddr),
     Quit,
 }
 
@@ -159,6 +165,29 @@ impl Command {
             "quit" | "q" | "exit" => Command::Quit,
             _ => return None,
         })
+    }
+}
+
+impl CueKind {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            CueKind::Audio(_) => "audio",
+            CueKind::Fade { .. } => "fade",
+            CueKind::Stop { .. } => "stop",
+            CueKind::Osc { .. } => "osc",
+            CueKind::Midi { .. } => "midi",
+            CueKind::Wait { .. } => "wait",
+        }
+    }
+}
+
+impl NextAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NextAction::DoNothing => "do_nothing",
+            NextAction::AutoContinue => "auto_continue",
+            NextAction::AutoFollow => "auto_follow",
+        }
     }
 }
 

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Show Player</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="transport">
+    <button id="go" class="go" title="GO (Space)">GO</button>
+    <div class="standby">
+      <div class="label">Standby</div>
+      <div class="standby-cue">
+        <span id="sb-number" class="num">—</span>
+        <span id="sb-name" class="name">No show loaded</span>
+      </div>
+      <div id="sb-meta" class="meta"></div>
+    </div>
+    <div class="nav">
+      <button id="prev" title="Previous cue (↑)">▲</button>
+      <button id="next" title="Next cue (↓)">▼</button>
+    </div>
+    <div class="kill">
+      <button id="stop-all" class="stop" title="Stop all, using each cue's fade-out (Esc)">Stop all</button>
+      <button id="panic" class="panic" title="Clear timers and fade everything out">Panic</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="list" aria-label="Cue list">
+      <div class="list-head">
+        <h1 id="show-name">—</h1>
+        <span id="cue-count" class="muted"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="c-state"></th>
+              <th class="c-num">#</th>
+              <th>Name</th>
+              <th class="c-type">Type</th>
+              <th class="c-time">Pre-wait</th>
+              <th class="c-time">Duration</th>
+              <th class="c-next">Then</th>
+            </tr>
+          </thead>
+          <tbody id="cues"></tbody>
+        </table>
+        <div id="empty" class="empty">Waiting for the engine…</div>
+      </div>
+    </section>
+
+    <aside class="active" aria-label="Active cues">
+      <h2>Active</h2>
+      <ul id="active"></ul>
+      <p id="active-empty" class="muted">Nothing running</p>
+    </aside>
+  </main>
+
+  <footer class="status">
+    <span id="conn" class="conn off" title="Engine connection"></span>
+    <form id="engine-form">
+      <label for="engine">Engine</label>
+      <input id="engine" spellcheck="false" autocomplete="off" />
+    </form>
+    <span id="conn-text" class="muted">offline</span>
+    <span class="keys muted">Space GO · Esc stop all · ↑↓ move standby · click a cue to set standby</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/lsp-core", "crates/lsp-audio", "crates/lsp-engine"]
+# Tauri UI is its own workspace so the headless engine build stays lean.
+exclude = ["ui/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

@@ -755,6 +755,7 @@ dependencies = [
  "lsp-core",
  "midir",
  "rosc",
+ "toml",
 ]
 
 [[package]]

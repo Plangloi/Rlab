@@ -1,0 +1,24 @@
+[package]
+name = "lsp-ui"
+description = "Show Player operator UI (Tauri) — OSC client of the lsp engine"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+# Standalone workspace: keeps webview deps out of the engine build.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rosc = "0.10"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -6,11 +6,12 @@ use crossbeam_channel::{Receiver, RecvTimeoutError};
 use lsp_audio::{load_clip, AudioCmd, AudioEvent, AudioHandle, Clip, VoiceId};
 use lsp_core::{db_to_lin, AudioCue, Command, CueKind, NextAction, Show};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::feedback::{self, RunInfo, Subscribers};
 use crate::{midi::MidiOut, osc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,6 +31,33 @@ struct Timer {
     action: Action,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    PreWait,
+    Running,
+    Stopping,
+}
+
+impl Phase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Phase::PreWait => "pre_wait",
+            Phase::Running => "running",
+            Phase::Stopping => "stopping",
+        }
+    }
+}
+
+/// What a cue is doing right now (for feedback only; the sequencer itself
+/// runs off `timers` and `cue_voices`).
+#[derive(Debug, Clone, Copy)]
+struct RunState {
+    phase: Phase,
+    started: Instant,
+    /// Seconds; -1 = unbounded.
+    duration: f32,
+}
+
 pub struct Controller {
     show: Show,
     playhead: usize,
@@ -42,12 +70,25 @@ pub struct Controller {
     seq: u64,
     osc_out: UdpSocket,
     midi: MidiOut,
+    subs: Subscribers,
+    states: HashMap<usize, RunState>,
+    durations: Vec<f32>,
+    dirty: bool,
+    last_push: Instant,
 }
 
 const TICK: Duration = Duration::from_millis(5);
+/// Feedback rate while cues are running / while idle (heartbeat).
+const PUSH_ACTIVE: Duration = Duration::from_millis(50);
+const PUSH_IDLE: Duration = Duration::from_secs(1);
 
 impl Controller {
-    pub fn new(show: Show, base_dir: &Path, audio: AudioHandle) -> Result<Self> {
+    pub fn new(
+        show: Show,
+        base_dir: &Path,
+        audio: AudioHandle,
+        feedback_sock: UdpSocket,
+    ) -> Result<Self> {
         for w in show.validate() {
             log::warn!("show: {w}");
         }
@@ -77,6 +118,11 @@ impl Controller {
             t0.elapsed()
         );
 
+        let sr = audio.sample_rate as f32;
+        let durations = feedback::durations(&show, |p| {
+            clips.get(p).map(|c| (c.len() / 2) as f32 / sr)
+        });
+
         Ok(Self {
             show,
             playhead: 0,
@@ -89,6 +135,11 @@ impl Controller {
             seq: 0,
             osc_out: UdpSocket::bind("0.0.0.0:0")?,
             midi: MidiOut::default(),
+            subs: Subscribers::new(feedback_sock),
+            states: HashMap::new(),
+            durations,
+            dirty: true,
+            last_push: Instant::now(),
         })
     }
 
@@ -103,11 +154,15 @@ impl Controller {
                 .min(TICK);
             match rx.recv_timeout(wait) {
                 Ok(Command::Quit) | Err(RecvTimeoutError::Disconnected) => break,
-                Ok(cmd) => self.handle(cmd),
+                Ok(cmd) => {
+                    self.handle(cmd);
+                    self.dirty = true;
+                }
                 Err(RecvTimeoutError::Timeout) => {}
             }
             self.poll_audio();
             self.run_timers();
+            self.push_feedback();
         }
         self.audio.send(AudioCmd::FadeAll { frames: 0 });
         std::thread::sleep(Duration::from_millis(50));
@@ -124,6 +179,9 @@ impl Controller {
             },
             Command::Panic => {
                 self.timers.clear();
+                for s in self.states.values_mut() {
+                    s.phase = Phase::Stopping;
+                }
                 let f = self.audio.secs_to_frames(self.show.settings.panic_fade);
                 self.audio.send(AudioCmd::FadeAll { frames: f });
                 log::warn!("PANIC");
@@ -144,6 +202,18 @@ impl Controller {
                 self.print_status();
             }
             Command::Status => self.print_status(),
+            Command::Subscribe(addr) => {
+                if self.subs.subscribe(addr) {
+                    log::info!("feedback: {addr} subscribed");
+                    self.send_cue_list(addr);
+                }
+            }
+            Command::Unsubscribe(addr) => {
+                if self.subs.unsubscribe(addr) {
+                    log::info!("feedback: {addr} unsubscribed");
+                }
+            }
+            Command::CueList(addr) => self.send_cue_list(addr),
             Command::Quit => {}
         }
     }
@@ -165,6 +235,7 @@ impl Controller {
                 break;
             }
             let Reverse(t) = self.timers.pop().expect("peeked");
+            self.dirty = true;
             match t.action {
                 Action::Fire(i) => self.execute(i),
                 Action::Continue(i) => self.trigger(i + 1),
@@ -176,6 +247,7 @@ impl Controller {
     fn poll_audio(&mut self) {
         while let Ok(ev) = self.audio.events.pop() {
             let AudioEvent::Finished { id, natural, clip } = ev;
+            self.dirty = true;
             drop(clip); // dealloc (if last ref) happens here, off the RT thread
             let Some(idx) = self.voice_cue.remove(&id) else {
                 continue;
@@ -211,6 +283,14 @@ impl Controller {
         self.playhead = self.playhead.max(idx + 1);
         if cue.pre_wait > 0.0 {
             let pw = cue.pre_wait;
+            self.states.insert(
+                idx,
+                RunState {
+                    phase: Phase::PreWait,
+                    started: Instant::now(),
+                    duration: pw,
+                },
+            );
             self.schedule(pw, Action::Fire(idx));
         } else {
             self.execute(idx);
@@ -276,6 +356,18 @@ impl Controller {
                 false
             }
         };
+        if finished_now {
+            self.states.remove(&idx);
+        } else {
+            self.states.insert(
+                idx,
+                RunState {
+                    phase: Phase::Running,
+                    started: Instant::now(),
+                    duration: self.durations[idx],
+                },
+            );
+        }
         if cue.next == NextAction::AutoContinue {
             self.schedule(cue.post_wait, Action::Continue(idx));
         }
@@ -325,6 +417,9 @@ impl Controller {
             _ => 0.0,
         });
         let frames = self.audio.secs_to_frames(fade);
+        if let Some(s) = self.states.get_mut(&idx) {
+            s.phase = Phase::Stopping;
+        }
         for id in self.cue_voices.get(&idx).cloned().unwrap_or_default() {
             self.audio.send(AudioCmd::Fade {
                 id,
@@ -341,6 +436,62 @@ impl Controller {
         for idx in running {
             self.stop_cue(idx, fade);
         }
+    }
+
+    /// Drop run states with nothing left behind them (no voices, no pending
+    /// pre-wait / duration timer).
+    fn reconcile_states(&mut self) {
+        let pending: HashSet<usize> = self
+            .timers
+            .iter()
+            .filter_map(|Reverse(t)| match t.action {
+                Action::Fire(i) | Action::Done(i) => Some(i),
+                Action::Continue(_) => None,
+            })
+            .collect();
+        let voices = &self.cue_voices;
+        self.states
+            .retain(|i, _| voices.contains_key(i) || pending.contains(i));
+    }
+
+    fn send_cue_list(&self, addr: std::net::SocketAddr) {
+        for m in feedback::cue_list(&self.show, &self.durations) {
+            self.subs.send_to(addr, m);
+        }
+    }
+
+    fn push_feedback(&mut self) {
+        if self.dirty {
+            self.reconcile_states();
+        }
+        self.subs.expire();
+        if self.subs.is_empty() {
+            self.dirty = false;
+            return;
+        }
+        let every = if self.states.is_empty() {
+            PUSH_IDLE
+        } else {
+            PUSH_ACTIVE
+        };
+        if !self.dirty && self.last_push.elapsed() < every {
+            return;
+        }
+        let mut running: Vec<RunInfo> = self
+            .states
+            .iter()
+            .map(|(&idx, s)| RunInfo {
+                idx,
+                phase: s.phase.as_str(),
+                elapsed: s.started.elapsed().as_secs_f32(),
+                duration: s.duration,
+            })
+            .collect();
+        running.sort_by_key(|r| r.idx);
+        let standby = (self.playhead < self.show.cues.len()).then_some(self.playhead);
+        self.subs.broadcast(feedback::state(standby, &running));
+        self.last_push = Instant::now();
+        self.dirty = false;
     }
 
     fn label(&self, idx: usize) -> String {

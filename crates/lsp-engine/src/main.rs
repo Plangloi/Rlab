@@ -1,4 +1,5 @@
 mod controller;
+mod feedback;
 mod midi;
 mod osc;
 
@@ -58,7 +59,7 @@ fn main() -> Result<()> {
     })?;
 
     let (tx, rx) = crossbeam_channel::unbounded::<Command>();
-    osc::spawn_server(
+    let feedback_sock = osc::spawn_server(
         args.osc.as_deref().unwrap_or(&show.settings.osc_listen),
         tx.clone(),
     )?;
@@ -92,7 +93,7 @@ fn main() -> Result<()> {
     }
     drop(tx);
 
-    let mut ctl = controller::Controller::new(show, &base, audio)?;
+    let mut ctl = controller::Controller::new(show, &base, audio, feedback_sock)?;
     ctl.run(rx);
     Ok(())
 }
