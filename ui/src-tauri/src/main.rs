@@ -46,6 +46,8 @@ struct ShowInfo {
     count: i32,
     /// Show file path on the engine host ("" = none loaded).
     path: String,
+    /// Show revision; edits must quote it.
+    rev: i32,
 }
 
 #[derive(Serialize, Clone)]
@@ -69,6 +71,8 @@ struct CueInfo {
     /// Why the cue would misbehave if fired ("" = fine).
     problem: String,
     second_trigger: String,
+    /// Full cue as stored in the show file (for the inspector).
+    data: serde_json::Value,
 }
 
 #[derive(Serialize, Clone)]
@@ -150,6 +154,61 @@ async fn open_show(
     Ok(Some(path))
 }
 
+/// Send an edit request (`{op, rev, ...}`, see the engine's edit module).
+/// The engine answers with `lsp:edit`.
+#[tauri::command]
+fn edit(client: State<Shared>, req: serde_json::Value) -> Result<(), String> {
+    client.send("/lsp/edit", vec![OscType::String(req.to_string())])
+}
+
+/// Ask where to create a new show file, then have the engine create and load it.
+#[tauri::command]
+async fn new_show(
+    app: AppHandle,
+    client: State<'_, Shared>,
+    current: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dlg = app
+        .dialog()
+        .file()
+        .set_title("New show")
+        .set_file_name("show.toml")
+        .add_filter("Show file", &["toml"]);
+    if let Some(dir) = current
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .and_then(|p| std::path::Path::new(p).parent())
+    {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(picked) = dlg.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let path = path.to_string_lossy().into_owned();
+    // The engine refuses to overwrite an existing file (reported via lsp:edit),
+    // so a show is never replaced from here.
+    client.send("/lsp/new", vec![OscType::String(path.clone())])?;
+    Ok(Some(path))
+}
+
+/// Pick a media file for an audio cue. Returns the path (not sent anywhere).
+#[tauri::command]
+async fn pick_media(app: AppHandle, dir: Option<String>) -> Result<Option<String>, String> {
+    let mut dlg = app.dialog().file().set_title("Choose audio file").add_filter(
+        "Audio",
+        &["wav", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg", "caf"],
+    );
+    if let Some(d) = dir.filter(|d| !d.is_empty()) {
+        dlg = dlg.set_directory(d);
+    }
+    let Some(picked) = dlg.blocking_pick_file() else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 /// Ask the engine to re-send the cue list (e.g. after a missed packet).
 #[tauri::command]
 fn refresh(client: State<Shared>) -> Result<(), String> {
@@ -196,6 +255,7 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
                 name: arg_s(a.first()),
                 count: arg_i(a.get(1)),
                 path: arg_s(a.get(2)),
+                rev: arg_i(a.get(3)),
             },
         ),
         "/lsp/cue" => app.emit(
@@ -211,7 +271,12 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
                 post_wait: arg_f(a.get(7)),
                 problem: arg_s(a.get(8)),
                 second_trigger: arg_s(a.get(9)),
+                data: serde_json::from_str(&arg_s(a.get(10))).unwrap_or_default(),
             },
+        ),
+        "/lsp/edit/reply" => app.emit(
+            "lsp:edit",
+            serde_json::from_str::<serde_json::Value>(&arg_s(a.first())).unwrap_or_default(),
         ),
         "/lsp/load" => app.emit(
             "lsp:load",
@@ -281,7 +346,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(client.clone())
         .invoke_handler(tauri::generate_handler![
-            command, get_engine, set_engine, refresh, open_show
+            command, get_engine, set_engine, refresh, open_show, edit, new_show, pick_media
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -289,7 +354,8 @@ fn main() {
             std::thread::Builder::new()
                 .name("osc-rx".into())
                 .spawn(move || {
-                    let mut buf = [0u8; rosc::decoder::MTU];
+                    // Cue data can exceed one Ethernet MTU.
+                    let mut buf = vec![0u8; 65_535];
                     loop {
                         match rx.recv_from(&mut buf) {
                             Ok((n, _)) => match rosc::decoder::decode_udp(&buf[..n]) {

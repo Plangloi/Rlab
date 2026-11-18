@@ -42,6 +42,8 @@ cargo build --release
 | `/lsp/status` | – | log standby + running |
 | `/lsp/load` | `path` | load a show file (path on the engine host) |
 | `/lsp/reload` | – | re-read the current show file |
+| `/lsp/new` | `path [name]` | create an empty show file and load it (never overwrites) |
+| `/lsp/edit` | `json` | edit the show (see **Editing**); reply `/lsp/edit/reply json` to the sender |
 | `/lsp/subscribe` | `[reply_port]` | receive feedback (renew every <10 s) |
 | `/lsp/unsubscribe` | `[reply_port]` | stop feedback |
 | `/lsp/cuelist` | `[reply_port]` | re-send the cue list to the caller |
@@ -56,8 +58,8 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 
 | Address | Args |
 |---|---|
-| `/lsp/show` | `name:s count:i path:s` |
-| `/lsp/cue` | `idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f problem:s second_trigger:s` |
+| `/lsp/show` | `name:s count:i path:s rev:i` |
+| `/lsp/cue` | `idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f problem:s second_trigger:s data:s` (`data` = the cue as JSON) |
 | `/lsp/state` | `standby:i` then `[idx:i phase:s elapsed:f duration:f]` per active cue |
 | `/lsp/load` | `status:s path:s message:s` — `loading` · `ok` · `error` |
 
@@ -81,6 +83,26 @@ Cue list with live progress, standby, GO, stop all / panic, per-cue stop, click 
 - Reloading the **same file** keeps running cues, matched by cue number (insert/renumber/edit freely); standby follows its cue number. Cues removed from the file fade out with their `fade_out`.
 - Loading a **different file** fades out everything running and resets standby to the first cue.
 - `osc_listen` / `audio_device` changes need an engine restart (logged as a warning).
+
+## Editing
+
+The show file stays the source of truth. Edits are applied to the TOML with `toml_edit` (comments and formatting are kept), validated by parsing the result, written atomically, and reloaded through hot reload — running cues keep playing. Every edit names the show revision it was made against (`rev` from `/lsp/show`); a stale edit, or one made while the file changed on disk, is refused.
+
+```json
+{"op":"add",       "rev":3, "after":0, "type":"audio", "fields":{"file":"/abs/or/relative.wav"}}
+{"op":"update",    "rev":4, "idx":1, "fields":{"number":"2.5", "gain_db":-6, "loop":null}}
+{"op":"delete",    "rev":5, "idx":1}
+{"op":"duplicate", "rev":6, "idx":0}
+{"op":"move",      "rev":7, "idx":2, "to":0}
+```
+
+- `null` resets a field to its default (removes it from the file).
+- New cues get an automatic number: next integer if free, else a midpoint (`1` → `1.5`).
+- Renumbering a cue retargets fade / stop cues that pointed at it, and a running cue keeps playing.
+- Media paths under the show's folder are stored relative to it.
+- Refused: duplicate numbers, fields that don't belong to the cue type, anything that wouldn't parse.
+
+In the UI, **Edit** (⌘E) switches to edit mode: click selects, double-click sets standby, the inspector edits the selected cue (changes apply on Enter / blur), and the toolbar adds, duplicates, moves and deletes (⌫ twice). **New…** creates a show.
 
 ## Safety
 
@@ -119,6 +141,7 @@ See `shows/demo.toml`.
 - [ ] LTC / MTC chase + timecode cues
 - [x] Show load over OSC, hot reload of show file, file watcher
 - [x] Tauri UI: cue list, GO, progress, stop/panic over OSC
-- [ ] UI: level meters, cue editing, show file open
+- [x] Cue editing (add / update / delete / duplicate / move) over OSC + UI inspector
+- [ ] UI: level meters, drag-to-reorder, multi-select, undo
 - [ ] Group cues, playlist mode, cue edit over OSC
 - [ ] Streaming decode for long files (> RAM budget)

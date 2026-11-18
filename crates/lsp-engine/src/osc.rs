@@ -3,7 +3,8 @@
 //! In:  /lsp/go  /lsp/stop [cue]  /lsp/hardstop [cue]  /lsp/pause [cue]  /lsp/resume [cue]
 //!      /lsp/panic  /lsp/goto <cue>  /lsp/next  /lsp/prev  /lsp/status
 //!      /lsp/subscribe [reply_port]  /lsp/unsubscribe [reply_port]  /lsp/cuelist [reply_port]
-//!      /lsp/load <path>  /lsp/reload
+//!      /lsp/load <path>  /lsp/reload  /lsp/new <path> [name]
+//!      /lsp/edit <json>   (reply: /lsp/edit/reply <json> to the sender)
 //! Feedback (see `feedback`) is sent from the same socket.
 //! Bundles are flattened; timetags ignored (execute on receipt).
 
@@ -22,7 +23,8 @@ pub fn spawn_server(addr: &str, tx: Sender<Command>) -> Result<UdpSocket> {
     std::thread::Builder::new()
         .name("lsp-osc".into())
         .spawn(move || {
-            let mut buf = [0u8; rosc::decoder::MTU];
+            // Max UDP payload: edit requests can exceed one Ethernet MTU.
+            let mut buf = vec![0u8; 65_535];
             loop {
                 match sock.recv_from(&mut buf) {
                     Ok((n, src)) => match rosc::decoder::decode_udp(&buf[..n]) {
@@ -98,6 +100,21 @@ pub fn to_command(m: &OscMessage, src: SocketAddr) -> Option<Command> {
             _ => return None,
         },
         "/lsp/reload" => Command::Reload,
+        "/lsp/edit" => match m.args.first() {
+            Some(OscType::String(j)) => Command::Edit {
+                json: j.clone(),
+                reply: Some(src),
+            },
+            _ => return None,
+        },
+        "/lsp/new" => match m.args.first() {
+            Some(OscType::String(p)) if !p.is_empty() => Command::NewShow {
+                path: p.into(),
+                name: m.args.get(1).and_then(arg_str).unwrap_or_default(),
+                reply: Some(src),
+            },
+            _ => return None,
+        },
         _ => return None,
     })
 }

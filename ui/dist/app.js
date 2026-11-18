@@ -95,7 +95,8 @@ document.addEventListener("keydown", (e) => {
     }
     return;
   }
-  if (e.target instanceof HTMLInputElement) return;
+  // Typing in a field (inspector, engine address) must never fire GO / panic.
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
   switch (e.key) {
     case " ":
       e.preventDefault();
@@ -188,6 +189,10 @@ function onLoad({ status, path, message }) {
     // Only surface slow loads; most reloads finish in a few ms.
     clearTimeout(bannerTimer);
     bannerTimer = setTimeout(() => showBanner("loading", `Loading ${file}…`), 300);
+  } else if (status === "edited") {
+    // Edits reload the file every time; their result shows in the list itself.
+    clearTimeout(bannerTimer);
+    if ($("banner").classList.contains("loading")) $("banner").hidden = true;
   } else if (status === "ok") {
     showBanner("ok", `Loaded ${file} · ${message}`);
   } else {
@@ -214,11 +219,24 @@ function renderEmpty() {
   if (!model.show) {
     el.textContent = "Waiting for the engine…";
   } else {
-    el.append(model.show.path ? "This show has no cues." : "No show loaded.");
-    const b = document.createElement("button");
-    b.textContent = "Open a show…";
-    b.addEventListener("click", openShow);
-    el.append(document.createElement("br"), b);
+    if (model.show.path) {
+      el.append(editor.on ? "No cues yet — use “+ Add cue…” above." : "This show has no cues.");
+      if (!editor.on) {
+        const b = document.createElement("button");
+        b.textContent = "Edit show";
+        b.addEventListener("click", () => setEditMode(true));
+        el.append(document.createElement("br"), b);
+      }
+    } else {
+      el.append("No show loaded.");
+      const b = document.createElement("button");
+      b.textContent = "Open a show…";
+      b.addEventListener("click", openShow);
+      const n = document.createElement("button");
+      n.textContent = "New show…";
+      n.addEventListener("click", newShow);
+      el.append(document.createElement("br"), b, " ", n);
+    }
   }
 }
 
@@ -265,11 +283,13 @@ function renderList() {
       tr.children[2].dataset.problem = c.problem;
       tr.title = c.problem;
     }
-    tr.addEventListener("click", () => send("goto", c.number));
+    tr.addEventListener("click", () => onRowClick(c));
+    tr.addEventListener("dblclick", () => editor.on && send("goto", c.number));
     tbody.appendChild(tr);
     rows[idx] = tr;
   });
   applyState();
+  editorAfterRender();
 }
 
 let cueListTimer = null;

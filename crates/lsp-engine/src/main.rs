@@ -1,4 +1,5 @@
 mod controller;
+mod edit;
 mod feedback;
 mod loader;
 mod midi;

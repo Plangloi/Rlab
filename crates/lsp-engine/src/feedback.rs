@@ -5,9 +5,11 @@
 //! sender's host). Packets are sent from the OSC server socket.
 //!
 //! Out:
-//!   /lsp/show   name:s count:i path:s
+//!   /lsp/show   name:s count:i path:s rev:i
 //!   /lsp/cue    idx:i number:s name:s type:s duration:f next:s pre_wait:f post_wait:f
-//!               problem:s second_trigger:s       (problem "" = cue is fine)
+//!               problem:s second_trigger:s data:s (problem "" = cue is fine;
+//!               data = the cue as JSON, media paths relative to the show)
+//!   /lsp/edit/reply  json:s   (to the editing client only)
 //!   /lsp/state  standby:i  [idx:i phase:s elapsed:f duration:f]*
 //!   /lsp/load   status:s path:s message:s     (status: loading | ok | error)
 //!
@@ -95,19 +97,23 @@ fn msg(addr: &str, args: Vec<OscType>) -> OscMessage {
 }
 
 /// `/lsp/show` followed by one `/lsp/cue` per cue.
-pub fn cue_list(
-    show: &Show,
-    durations: &[f32],
-    problems: &[Option<String>],
-    path: &str,
-) -> Vec<OscMessage> {
+pub struct ListMeta<'a> {
+    pub path: &'a str,
+    pub rev: u64,
+    pub problems: &'a [Option<String>],
+    /// Per-cue JSON (`data` arg); missing entries are sent as "".
+    pub data: &'a [String],
+}
+
+pub fn cue_list(show: &Show, durations: &[f32], meta: &ListMeta) -> Vec<OscMessage> {
     let mut out = Vec::with_capacity(show.cues.len() + 1);
     out.push(msg(
         "/lsp/show",
         vec![
             OscType::String(show.name.clone()),
             OscType::Int(show.cues.len() as i32),
-            OscType::String(path.into()),
+            OscType::String(meta.path.into()),
+            OscType::Int(meta.rev as i32),
         ],
     ));
     for (i, c) in show.cues.iter().enumerate() {
@@ -122,12 +128,17 @@ pub fn cue_list(
                 OscType::String(c.next.as_str().into()),
                 OscType::Float(c.pre_wait),
                 OscType::Float(c.post_wait),
-                OscType::String(problems.get(i).cloned().flatten().unwrap_or_default()),
+                OscType::String(meta.problems.get(i).cloned().flatten().unwrap_or_default()),
                 OscType::String(c.second_trigger.as_str().into()),
+                OscType::String(meta.data.get(i).cloned().unwrap_or_default()),
             ],
         ));
     }
     out
+}
+
+pub fn edit_reply(json: String) -> OscMessage {
+    msg("/lsp/edit/reply", vec![OscType::String(json)])
 }
 
 pub fn load_status(status: &str, path: &str, message: &str) -> OscMessage {
@@ -231,7 +242,14 @@ duration = 2.5
         .unwrap();
         let d = durations(&show, |_| Some(10.0));
         assert_eq!(d, vec![9.0, -1.0, 2.5]);
-        let l = cue_list(&show, &d, &[None, Some("bad".into())], "/x/show.toml");
+        let meta = ListMeta {
+            path: "/x/show.toml",
+            rev: 7,
+            problems: &[None, Some("bad".into())],
+            data: &[],
+        };
+        let l = cue_list(&show, &d, &meta);
+        assert_eq!(l[0].args[3], OscType::Int(7));
         assert_eq!(l[2].args[8], OscType::String("bad".into()));
         assert_eq!(l[3].args[8], OscType::String("".into()));
         assert_eq!(l[0].args[2], OscType::String("/x/show.toml".into()));

@@ -18,6 +18,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -113,6 +114,7 @@ main {
   grid-template-columns: 1fr 300px;
   min-height: 0;
 }
+body.editing main { grid-template-columns: 1fr 360px; }
 
 .list { display: flex; flex-direction: column; min-height: 0; }
 .list-head {
@@ -131,6 +133,56 @@ main {
 }
 .file-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
 .file-actions button { padding: 4px 10px; font-size: 12px; }
+
+.toggle.on { background: var(--prewait); border-color: var(--prewait); color: #06121d; font-weight: 600; }
+.edit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 18px 8px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.edit-bar button, .edit-bar select { padding: 4px 10px; font-size: 12px; }
+.edit-bar .hint { margin-left: auto; font-size: 11px; }
+select, .inspector input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.danger { color: var(--panic); border-color: color-mix(in srgb, var(--panic) 50%, var(--line)); }
+.danger.confirm { background: var(--panic); color: #fff; }
+tr.selected td { background: color-mix(in srgb, var(--prewait) 16%, transparent); }
+tr.selected td:first-child { box-shadow: inset 2px 0 0 var(--prewait); }
+
+.inspector {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.inspector .f {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+.inspector .f > label { color: var(--muted); }
+.inspector .f input:not([type="checkbox"]), .inspector .f select { width: 100%; min-width: 0; font-size: 12px; }
+.inspector .f input:focus, .inspector .f select:focus { outline: 1px solid var(--prewait); border-color: var(--prewait); }
+.inspector .f .with-btn { display: flex; gap: 6px; min-width: 0; }
+.inspector .f .with-btn button { padding: 3px 8px; font-size: 12px; flex: none; }
+.inspector .f input[type="checkbox"] { justify-self: start; width: 16px; height: 16px; }
+.inspector .problem { color: var(--panic); font-size: 12px; margin: 4px 0 10px; }
+.inspector .sep { height: 1px; background: var(--line); margin: 10px 0; }
+.inspector input, .inspector select { user-select: text; -webkit-user-select: text; }
 
 .banner {
   --tone: var(--prewait);

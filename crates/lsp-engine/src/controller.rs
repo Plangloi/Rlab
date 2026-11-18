@@ -1,7 +1,7 @@
 //! Cue sequencer. Single-threaded event loop: control commands in, audio
 //! events in, timer heap for pre-wait / post-wait / durations.
 
-use anyhow::Result;
+use anyhow::{anyhow, bail, Context, Result};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use lsp_audio::{AudioCmd, AudioEvent, AudioHandle, Curve, VoiceId};
 use lsp_core::{
@@ -13,7 +13,8 @@ use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::feedback::{self, RunInfo, Subscribers};
+use crate::edit;
+use crate::feedback::{self, ListMeta, RunInfo, Subscribers};
 use crate::loader::{self, ClipCache, LoadResult, Loaded};
 use crate::{midi::MidiOut, osc};
 
@@ -138,6 +139,12 @@ pub struct Controller {
     panic_until: Option<Instant>,
     /// Per-cue problems (missing media, bad targets, ...), sent to UIs.
     problems: Vec<Option<String>>,
+    /// Bumped on every show (re)load; edits must name the current one.
+    rev: u64,
+    /// The in-flight load was caused by an edit (report "edited", not "ok").
+    edit_load: bool,
+    /// Cue renumbered by that edit: (old, new), so a running cue keeps playing.
+    pending_rename: Option<(String, String)>,
     osc_out: UdpSocket,
     midi: MidiOut,
     subs: Subscribers,
@@ -187,6 +194,9 @@ impl Controller {
             seq: 0,
             panic_until: None,
             problems: Vec::new(),
+            rev: 0,
+            edit_load: false,
+            pending_rename: None,
             osc_out: UdpSocket::bind("0.0.0.0:0")?,
             midi: MidiOut::default(),
             subs: Subscribers::new(feedback_sock),
@@ -320,8 +330,101 @@ impl Controller {
                         .broadcast(feedback::load_status("error", "", "no show file loaded"));
                 }
             },
+            Command::Edit { json, reply } => {
+                let res = self.apply_edit(&json);
+                let body = match res {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!("edit refused: {e:#}");
+                        if let Some(a) = reply {
+                            self.send_cue_list(a); // client may be looking at a stale list
+                        }
+                        serde_json::json!({ "status": "error", "message": format!("{e:#}") })
+                    }
+                };
+                if let Some(a) = reply {
+                    self.subs.send_to(a, feedback::edit_reply(body.to_string()));
+                }
+            }
+            Command::NewShow { path, name, reply } => {
+                let body = match self.new_show(path, &name) {
+                    Ok(p) => serde_json::json!({ "status": "ok", "op": "new", "path": p }),
+                    Err(e) => {
+                        log::warn!("new show: {e:#}");
+                        serde_json::json!({ "status": "error", "message": format!("{e:#}") })
+                    }
+                };
+                if let Some(a) = reply {
+                    self.subs.send_to(a, feedback::edit_reply(body.to_string()));
+                }
+            }
             Command::Quit => {}
         }
+    }
+
+    // ── Editing ───────────────────────────────────────────
+
+    /// Apply an edit to the show file and reload it. Returns the reply body.
+    fn apply_edit(&mut self, json: &str) -> Result<serde_json::Value> {
+        let req: edit::Request = serde_json::from_str(json).context("bad edit request")?;
+        let path = self
+            .show_path
+            .clone()
+            .ok_or_else(|| anyhow!("no show file loaded — create one with New show"))?;
+        if self.loading {
+            bail!("the show is (re)loading — try again");
+        }
+        if req.rev != self.rev {
+            bail!(
+                "the show changed since this edit was made (rev {} ≠ {}); try again",
+                req.rev,
+                self.rev
+            );
+        }
+        if loader::mtime(&path) != self.show_mtime {
+            self.start_load(path);
+            bail!("the show file changed on disk and is being reloaded; try again");
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let base = path.parent().map(PathBuf::from).unwrap_or_default();
+        let out = edit::apply(&text, &base, &req.edit)?;
+        edit::write_atomic(&path, &out.text)?;
+        log::info!("edit: {}", out.summary);
+        self.pending_rename = out.rename;
+        self.edit_load = true;
+        self.start_load(path);
+        Ok(serde_json::json!({
+            "status": "ok",
+            "op": req.edit.name(),
+            "idx": out.idx,
+            "number": out.number,
+            "message": out.summary,
+        }))
+    }
+
+    fn new_show(&mut self, path: PathBuf, name: &str) -> Result<String> {
+        let path = if path.extension().is_some_and(|e| e == "toml") {
+            path
+        } else {
+            path.with_extension("toml")
+        };
+        if path.exists() {
+            bail!("{} already exists — open it instead", path.display());
+        }
+        let name = match name.trim() {
+            "" => path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Untitled".into()),
+            n => n.to_string(),
+        };
+        std::fs::write(&path, edit::new_show_text(&name))
+            .with_context(|| format!("creating {}", path.display()))?;
+        log::info!("created {}", path.display());
+        let shown = path.display().to_string();
+        self.start_load(path);
+        Ok(shown)
     }
 
     fn find(&self, what: &str, number: &str) -> Option<usize> {
@@ -701,7 +804,32 @@ impl Controller {
             .as_deref()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        feedback::cue_list(&self.show, &self.durations, &self.problems, &path)
+        let base = self.show_path.as_deref().and_then(|p| p.parent());
+        // Full cue data for editors; media paths shown as written in the file.
+        let data: Vec<String> = self
+            .show
+            .cues
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                if let (CueKind::Audio(a), Some(base)) = (&mut c.kind, base) {
+                    if let Ok(rel) = a.file.strip_prefix(base) {
+                        a.file = rel.to_path_buf();
+                    }
+                }
+                serde_json::to_string(&c).unwrap_or_default()
+            })
+            .collect();
+        feedback::cue_list(
+            &self.show,
+            &self.durations,
+            &ListMeta {
+                path: &path,
+                rev: self.rev,
+                problems: &self.problems,
+                data: &data,
+            },
+        )
     }
 
     fn send_cue_list(&self, addr: std::net::SocketAddr) {
@@ -738,6 +866,8 @@ impl Controller {
             match res {
                 Ok(l) => self.apply_show(l),
                 Err((path, e)) => {
+                    self.edit_load = false;
+                    self.pending_rename = None;
                     log::error!("load {}: {e} (keeping current show)", path.display());
                     self.subs.broadcast(feedback::load_status(
                         "error",
@@ -776,7 +906,7 @@ impl Controller {
     fn apply_show(&mut self, l: Loaded) {
         let same_file = self.show_path.as_deref() == Some(l.path.as_path());
         let remap: Vec<Option<usize>> = if same_file {
-            loader::remap(&self.show, &l.show)
+            loader::remap(&self.show, &l.show, self.pending_rename.as_ref())
         } else {
             vec![None; self.show.cues.len()]
         };
@@ -887,6 +1017,13 @@ impl Controller {
         if broken > 0 {
             log::warn!("{broken} cue(s) have problems");
         }
+        self.pending_rename = None;
+        self.rev += 1;
+        let status = if std::mem::take(&mut self.edit_load) {
+            "edited"
+        } else {
+            "ok"
+        };
         self.show = l.show;
         self.problems = l.problems;
         self.clips = l.clips;
@@ -897,7 +1034,7 @@ impl Controller {
         let path = self.show_path.as_deref().unwrap().display().to_string();
         self.subs.broadcast_many(self.cue_list());
         self.subs
-            .broadcast(feedback::load_status("ok", &path, &message));
+            .broadcast(feedback::load_status(status, &path, &message));
         self.print_status();
     }
 

@@ -201,6 +201,18 @@ pub enum Command {
     Load(PathBuf),
     /// Re-read the current show file.
     Reload,
+    /// Edit the show file: JSON request (see the engine's `edit` module).
+    /// Replies go to `reply`.
+    Edit {
+        json: String,
+        reply: Option<SocketAddr>,
+    },
+    /// Create a new, empty show file and load it (refuses to overwrite).
+    NewShow {
+        path: PathBuf,
+        name: String,
+        reply: Option<SocketAddr>,
+    },
     Quit,
 }
 

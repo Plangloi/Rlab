@@ -57,6 +57,10 @@ pub fn load(path: &Path, sample_rate: u32, cache: &ClipCache) -> Result<Loaded> 
         let CueKind::Audio(a) = &mut cue.kind else {
             continue;
         };
+        if a.file.as_os_str().is_empty() {
+            problems[i] = Some("no media file chosen".into());
+            continue;
+        }
         if a.file.is_relative() {
             a.file = base.join(&a.file);
         }
@@ -115,9 +119,16 @@ pub fn spawn(path: PathBuf, sample_rate: u32, cache: ClipCache, tx: Sender<LoadR
     }
 }
 
-/// For each cue index in `old`, its index in `new` (matched by cue number).
-pub fn remap(old: &Show, new: &Show) -> Vec<Option<usize>> {
-    old.cues.iter().map(|c| new.find(&c.number)).collect()
+/// For each cue index in `old`, its index in `new` (matched by cue number,
+/// following a known `rename` (old, new) from an edit).
+pub fn remap(old: &Show, new: &Show, rename: Option<&(String, String)>) -> Vec<Option<usize>> {
+    old.cues
+        .iter()
+        .map(|c| match rename {
+            Some((from, to)) if *from == c.number => new.find(to),
+            _ => new.find(&c.number),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -166,6 +177,8 @@ mod tests {
         let new = parse(
             "name='a'\n[[cue]]\nnumber='0'\ntype='wait'\nduration=1\n[[cue]]\nnumber='1'\ntype='wait'\nduration=1\n",
         );
-        assert_eq!(remap(&old, &new), vec![Some(1), None]);
+        assert_eq!(remap(&old, &new, None), vec![Some(1), None]);
+        let r = ("2".to_string(), "0".to_string());
+        assert_eq!(remap(&old, &new, Some(&r)), vec![Some(1), Some(0)]);
     }
 }

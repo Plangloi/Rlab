@@ -35,9 +35,27 @@
         <span id="cue-count" class="muted"></span>
         <span id="show-file" class="file muted"></span>
         <div class="file-actions">
+          <button id="new-show" title="Create a new show file">New…</button>
           <button id="open" title="Open a show file (⌘O)">Open…</button>
           <button id="reload" title="Reload the show file from disk (⌘R)">Reload</button>
+          <button id="edit-toggle" class="toggle" title="Edit mode: select cues, change them in the inspector (⌘E)">Edit</button>
         </div>
+      </div>
+      <div id="edit-bar" class="edit-bar" hidden>
+        <select id="add-type" title="Add a cue after the selected one">
+          <option value="">+ Add cue…</option>
+          <option value="audio">Audio</option>
+          <option value="fade">Fade</option>
+          <option value="stop">Stop</option>
+          <option value="wait">Wait</option>
+          <option value="osc">OSC</option>
+          <option value="midi">MIDI</option>
+        </select>
+        <button id="dup" title="Duplicate the selected cue (⌘D)">Duplicate</button>
+        <button id="move-up" title="Move the selected cue up">Move ↑</button>
+        <button id="move-down" title="Move the selected cue down">Move ↓</button>
+        <button id="delete" class="danger" title="Delete the selected cue (⌫, press twice)">Delete</button>
+        <span class="muted hint">Click selects · double-click sets standby · edits save to the show file</span>
       </div>
       <div id="banner" class="banner" hidden>
         <span id="banner-text"></span>
@@ -63,7 +81,11 @@
       </div>
     </section>
 
-    <aside class="active" aria-label="Active cues">
+    <aside class="active" aria-label="Inspector and active cues">
+      <section id="inspector" class="inspector" hidden>
+        <h2 id="insp-title">Inspector</h2>
+        <div id="insp-body"></div>
+      </section>
       <h2>Active</h2>
       <ul id="active"></ul>
       <p id="active-empty" class="muted">Nothing running</p>
@@ -81,5 +103,6 @@
   </footer>
 
   <script src="app.js"></script>
+  <script src="editor.js"></script>
 </body>
 </html>
