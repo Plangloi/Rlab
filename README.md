@@ -3,7 +3,7 @@
 Cue-based show playback engine for macOS + Linux, modelled on [Linux Show Player](https://www.linux-show-player.org/).
 Headless engine first — every UI (Tauri, egui, TouchOSC, Q-SYS, Stream Deck) is just an OSC client.
 
-![Operator UI — Standard theme, run mode: preshow loop running, fade in progress, cue 3 on standby](docs/screenshots/standard-run.jpg)
+![Operator UI — Standard theme, run mode: preshow loop running, fade in progress, cue 3 on standby, Art-Net timecode rolling with a countdown to cue 3's timecode trigger](docs/screenshots/standard-run.jpg)
 
 - **Real-time audio engine** in Rust: lock-free mixer, preloaded clips, GO latency of one audio buffer
 - **Cue types**: audio, fade, stop, OSC, MIDI/MSC, wait — with pre/post-waits, auto-continue and auto-follow
@@ -16,7 +16,7 @@ Headless engine first — every UI (Tauri, egui, TouchOSC, Q-SYS, Stream Deck) i
 
 | Underground | Pro |
 |---|---|
-| ![Underground theme: terminal look with ASCII progress bars, cue states and a live OSC traffic log](docs/screenshots/underground-run.jpg) | ![Pro theme: broadcast console with clocks, standby card, active cues and a master output meter](docs/screenshots/pro-run.jpg) |
+| ![Underground theme: terminal look with ASCII progress bars, cue states, the timecode panel and a live OSC traffic log](docs/screenshots/underground-run.jpg) | ![Pro theme: broadcast console with clocks, standby card, timecode panel, active cues and a master output meter](docs/screenshots/pro-run.jpg) |
 | Terminal look: cue STATE column, ASCII progress bars, live **OSC_TRAFFIC** log of what the UI sends and receives | Broadcast console: time-of-day and show-running clocks, device / DSP chips, Active panel, **MASTER OUT** meter with real engine levels |
 
 ## Layout

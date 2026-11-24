@@ -766,6 +766,10 @@ body[data-theme="pro"] .next .detail b { font-weight: 400; color: var(--text); }
 body[data-theme="pro"] .next .detail .mono { font-family: "JetBrains Mono", monospace; }
 body[data-theme="pro"] .controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, 56px); gap: 8px; width: 360px; }
 body[data-theme="pro"] .controls .divider { display: none; }
+/* With the timecode panel the controls wrap to their own row: keep them
+   right-aligned under it, and in one row in Pro. */
+.transport:has(#tcbig:not([hidden])) .controls { margin-left: auto; }
+body[data-theme="pro"] .transport:has(#tcbig:not([hidden])) .controls { grid-template-columns: repeat(6, 120px); grid-template-rows: 56px; width: auto; }
 body[data-theme="pro"] .sq,
 body[data-theme="pro"] .ctl { width: auto; height: 56px; border-radius: 10px; background: var(--btn); border: 1px solid var(--btn-line); padding: 0 10px; }
 body[data-theme="pro"] .ctl.resume { background: var(--paused); color: #1a0d2e; border-color: var(--paused); }
