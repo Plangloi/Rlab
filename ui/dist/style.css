@@ -78,6 +78,44 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   border-radius: 5px;
   padding: 3px 8px;
 }
+/* incoming timecode readout (cue triggers) */
+.tc { display: flex; align-items: baseline; gap: 6px; font: 600 14px var(--mono); color: var(--muted); white-space: nowrap; }
+.tc .k { font-size: 10px; letter-spacing: 1.4px; }
+.tc.rolling .v { color: var(--live); }
+.tc.error .v { color: var(--warn); }
+body[data-theme="pro"] .tc { padding: 5px 10px; border-radius: 6px; background: #14171c; border: 1px solid #23272f; }
+.tctag { margin-left: 8px; font-size: 11px; color: var(--accent); white-space: nowrap; }
+/* big timecode panel in the transport (hidden in edit mode with the transport) */
+body:not(.editing) #tc:not([hidden]) { display: none; }
+.tcbig {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  background: #111214;
+  --tc: var(--muted);
+}
+.tcbig .tc-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; letter-spacing: 1.5px; color: var(--tc); }
+.tcbig .tc-src { margin-left: auto; padding-left: 16px; font-weight: 500; letter-spacing: 0.5px; color: var(--muted); }
+.tcbig .tc-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--tc); }
+.tcbig .tc-v { font: 700 64px/1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: 1px; color: var(--tc); }
+.tcbig .tc-next { font-size: 15px; color: var(--dim); min-height: 20px; white-space: nowrap; }
+.tcbig .tc-next b { color: var(--text); font-weight: 600; }
+.tcbig .tc-next .soon { color: var(--stopping); }
+.tcbig.rolling { --tc: var(--live); border-color: var(--live); box-shadow: 0 0 24px rgba(95, 224, 138, 0.22); }
+.tcbig.rolling .tc-dot { animation: tc-pulse 1s steps(2, jump-none) infinite; }
+.tcbig.stopped { --tc: var(--text-2); }
+.tcbig.error { --tc: var(--warn); border-color: var(--warn); }
+.tcbig.error .tc-v { font-size: 32px; }
+@keyframes tc-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .tcbig.rolling .tc-dot { animation: none; } }
+body[data-theme="underground"] .tcbig { border-radius: 0; background: var(--bg); }
+body[data-theme="underground"] .tcbig.rolling .tc-v { text-shadow: 0 0 16px rgba(95, 224, 138, 0.7); }
+body[data-theme="pro"] .tcbig { justify-content: center; background: var(--card); border-color: var(--card-line); }
+body[data-theme="pro"] .tcbig.rolling { border-color: var(--live); }
 .top-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
 .link {
   background: none;
@@ -426,6 +464,7 @@ body.offline .transport button { opacity: 0.5; }
   .go { width: 140px; height: 96px; font-size: 40px; }
   .next .num { font-size: 32px; }
   .next .name { font-size: 28px; }
+  .tcbig .tc-v { font-size: 40px; }
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .f.s3, .f.s4 { grid-column: span 2; }
   .status .keys { display: none; }

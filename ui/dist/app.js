@@ -644,6 +644,13 @@ function renderList() {
     tr.classList.add(`kind-${c.kind}`);
     tr.querySelector(".c-num").textContent = c.number;
     tr.querySelector(".c-name .nm").textContent = c.name;
+    if (d.timecode) {
+      const tag = document.createElement("span");
+      tag.className = "tctag";
+      tag.title = "Fires when incoming timecode passes this time";
+      tag.textContent = `TC ${d.timecode}`;
+      tr.querySelector(".c-name .nm").after(tag);
+    }
     orderCells(tr);
     tr.querySelector(".c-target").textContent = d.target ?? "";
     tr.querySelector(".c-pre").textContent = fmtSecs(c.pre_wait || 0, 1);
@@ -722,6 +729,7 @@ function renderStandby() {
       }[c.second_trigger];
       if (what) addMeta(meta, "note", what);
     }
+    if (c.data?.timecode) addMeta(meta, "note", `fires at TC ${c.data.timecode}`);
     if (c.problem) addMeta(meta, "warn", `⚠ ${c.problem}`);
   } else {
     $("sb-number").textContent = "—";
@@ -890,6 +898,68 @@ listen("lsp:cue", ({ payload }) => {
 
 listen("lsp:state", ({ payload }) => onState(payload));
 listen("lsp:meter", ({ payload }) => onMeter(payload));
+/** Frames since midnight for "HH:MM:SS:FF" at `fps` labels per second. */
+function tcFrames(s, fps) {
+  const p = String(s).split(/[:;.]/).map(Number);
+  if (p.length !== 4 || p.some((x) => !Number.isInteger(x))) return null;
+  return ((p[0] * 60 + p[1]) * 60 + p[2]) * fps + p[3];
+}
+
+function fmtCountdown(frames, fps) {
+  const secs = Math.floor(frames / fps);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs / 60) % 60);
+  const s = String(secs % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
+/** The big transport panel: time, state, next timecode cue and how long until it. */
+function renderTcBig(t) {
+  const box = $("tcbig");
+  box.hidden = t.source === "off";
+  if (box.hidden) return;
+  box.className = `tcbig ${t.status}`;
+  $("tcb-state").textContent = { rolling: "TC ROLLING", stopped: "TC STOPPED", waiting: "WAITING FOR TC", error: "TC ERROR" }[t.status] ?? "TIMECODE";
+  $("tcb-src").textContent = `${t.source === "mtc" ? "MTC" : "Art-Net"}${t.rate ? ` · ${t.rate} fps` : ""}`;
+  $("tcb-v").textContent = t.status === "error" ? t.message : t.tc || "--:--:--:--";
+  box.title = t.message;
+  const next = $("tcb-next");
+  next.textContent = "";
+  const fps = t.rate === "24" ? 24 : t.rate === "25" ? 25 : 30;
+  const now = t.tc ? tcFrames(t.tc, fps) : null;
+  if (now === null || t.status === "error") return;
+  let best = null;
+  model.cues.forEach((c) => {
+    const f = c?.data?.timecode ? tcFrames(c.data.timecode, fps) : null;
+    if (f !== null && f > now && (!best || f < best.f)) best = { f, c };
+  });
+  if (!best) return void (next.textContent = "no more timecode cues");
+  const left = best.f - now;
+  const b = document.createElement("b");
+  b.textContent = `${best.c.number} ${best.c.name || ""}`.trim();
+  const when = document.createElement("span");
+  when.textContent = ` in ${fmtCountdown(left, fps)}`;
+  if (left < 5 * fps) when.className = "soon";
+  next.append("Next ", b, when);
+}
+
+let tcLast = "";
+listen("lsp:timecode", ({ payload: t }) => {
+  renderTcBig(t);
+  const el = $("tc");
+  el.hidden = t.source === "off";
+  if (el.hidden) return;
+  el.className = `tc ${t.status}`;
+  $("tc-v").textContent = t.status === "error" ? "error" : t.tc || "--:--:--:--";
+  const what = t.source === "mtc" ? "MTC" : "Art-Net timecode";
+  el.title =
+    t.status === "error"
+      ? `${what}: ${t.message}`
+      : `${what} · ${t.status}${t.rate ? ` · ${t.rate} fps` : ""}\n${t.message}\nCues with a timecode trigger fire as it rolls past them`;
+  const key = `${t.source}:${t.status}`;
+  if (key !== tcLast && ug()) logTraffic(`<- /lsp/timecode ${t.source} ${t.status}`);
+  tcLast = key;
+});
 listen("lsp:engine", ({ payload }) => {
   engineInfo = payload;
   $("dev-chip").textContent = `${payload.device} · ${trimNum(payload.rate / 1000)} kHz`;

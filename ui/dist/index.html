@@ -19,6 +19,7 @@
       <div><span class="k">TIME OF DAY</span><span id="tod" class="v">--:--:--</span></div>
       <button id="show-run-box" class="clock-btn" title="Time since the first GO of this show — click to reset"><span class="k">SHOW RUNNING</span><span id="show-run" class="v">00:00:00</span></button>
     </div>
+    <span id="tc" class="tc" role="status" hidden><span class="k">TC</span><span id="tc-v" class="v">--:--:--:--</span></span>
     <div class="top-right">
       <span id="uplink" class="uplink ug-only"></span>
       <button id="theme-toggle" class="link" title="Switch theme">Theme</button>
@@ -48,6 +49,11 @@
         <span id="sb-name" class="name">No show loaded</span>
       </div>
       <span id="sb-meta" class="detail"></span>
+    </div>
+    <div id="tcbig" class="tcbig" role="status" aria-label="Incoming timecode" hidden>
+      <div class="tc-head"><span class="tc-dot" aria-hidden="true"></span><span id="tcb-state">TIMECODE</span><span id="tcb-src" class="tc-src"></span></div>
+      <div id="tcb-v" class="tc-v">--:--:--:--</div>
+      <div id="tcb-next" class="tc-next"></div>
     </div>
     <div class="controls">
       <button id="prev" class="sq" aria-label="Previous cue (↑)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"></path></svg></button>

@@ -14,6 +14,10 @@
 //!   /lsp/load   status:s path:s message:s     (status: loading | ok | error)
 //!   /lsp/meter  peak_l:f peak_r:f clips:i load:f subs:i   (linear peaks since last push)
 //!   /lsp/engine device:s rate:i channels:i max_voices:i watch:i   (on subscribe)
+//!   /lsp/timecode source:s status:s tc:s rate:s message:s   (with every state push)
+//!               source: off | mtc | artnet; status: off | waiting | rolling | stopped | error;
+//!               tc = last reading HH:MM:SS:FF ("" = none yet); message = what is
+//!               listened to, or the error
 //!
 //! `standby` is the playhead index (-1 = end of list). `duration` -1 = unbounded
 //! (looping audio). `phase` is `pre_wait` | `running` | `paused` | `stopping`.
@@ -166,6 +170,16 @@ pub fn engine_info(device: &str, rate: u32, channels: u16, max_voices: usize, wa
             OscType::Int(max_voices as i32),
             OscType::Int(watch as i32),
         ],
+    )
+}
+
+pub fn timecode(source: &str, status: &str, tc: &str, rate: &str, message: &str) -> OscMessage {
+    msg(
+        "/lsp/timecode",
+        [source, status, tc, rate, message]
+            .into_iter()
+            .map(|s| OscType::String(s.into()))
+            .collect(),
     )
 }
 

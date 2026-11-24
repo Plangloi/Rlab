@@ -7,6 +7,7 @@ Headless engine first — every UI (Tauri, egui, TouchOSC, Q-SYS, Stream Deck) i
 
 - **Real-time audio engine** in Rust: lock-free mixer, preloaded clips, GO latency of one audio buffer
 - **Cue types**: audio, fade, stop, OSC, MIDI/MSC, wait — with pre/post-waits, auto-continue and auto-follow
+- **Timecode triggers**: cues fire from incoming MTC or Art-Net timecode
 - **Show safety**: second-trigger policy, pause/resume, hard stop, double-panic, broken-cue detection
 - **Live editing**: edit cues from the UI while the show runs; the TOML show file stays the source of truth (comments kept)
 - **Hot reload**: save the show file and running cues keep playing
@@ -79,6 +80,7 @@ Subscribers get packets from the engine's OSC port, sent to the subscriber's sou
 | `/lsp/load` | `status:s path:s message:s` — `loading` · `ok` · `error` |
 | `/lsp/meter` | `peak_l:f peak_r:f clips:i load:f subs:i` — linear output peaks and clip count since the previous message, worst audio-callback load (0–1), feedback clients; sent with every state push |
 | `/lsp/engine` | `device:s rate:i channels:i max_voices:i watch:i` — on subscribe |
+| `/lsp/timecode` | `source:s status:s tc:s rate:s message:s` — `off`/`mtc`/`artnet`; `off` · `waiting` · `rolling` · `stopped` · `error`; last reading `HH:MM:SS:FF`; what is listened to, or the error; sent with every state push |
 
 `standby` = -1 at end of list. `duration` = -1 for looping audio. `phase` = `pre_wait` · `running` · `paused` · `stopping`. `problem` is empty for a healthy cue, otherwise why it would misbehave (missing media, missing/non-audio target, bad OSC host, duplicate number).
 
@@ -145,6 +147,30 @@ second_trigger = "restart"
 curve = "equal_power"
 ```
 
+## Timecode triggers
+
+Any cue can fire from incoming timecode, from a DAW, video server or lighting desk:
+
+```toml
+[settings]
+timecode = "mtc"            # off (default) | mtc | artnet
+# mtc_port = "Scarlett"     # MIDI input, name contains; default = first non-"Through" port
+# artnet_listen = "0.0.0.0:6454"
+
+[[cue]]
+number = "5"
+type = "audio"
+file = "media/hit.wav"
+timecode = "01:00:12:10"    # HH:MM:SS:FF
+```
+
+- **Sources**: MTC (quarter-frame and full-frame SysEx) on a MIDI input, or Art-Net **ArtTimeCode** packets (OpCode 0x9700). 24, 25, 29.97 drop-frame and 30 fps. The rate comes from the stream.
+- **Firing**: a cue fires when timecode *rolls forward* past its time, through the normal trigger path (pre-wait, second-trigger policy, chaining). Standby moves past it as with GO.
+- **Locate**: a stop, rewind or jump of more than one second moves the position without firing the cues it skipped. Roll back before a cue to fire it again.
+- GO, stop and panic still work while timecode runs. To rehearse without timecode, set `timecode = "off"`.
+- The listener starts when a show loads and restarts when these settings change. If it fails (port in use, MIDI device missing), the error appears in the UI and log; reloading the show retries. `lsp --list-devices` lists MIDI inputs.
+- In the UI the **TC** readout in the top bar shows the incoming time (green while rolling). Cues with a trigger are tagged in the cue list, and the time is set in the inspector's **Triggers** tab.
+
 ## Cue types
 
 `audio` · `fade` · `stop` · `osc` · `midi` (raw bytes → MSC/notes/PC) · `wait`
@@ -162,7 +188,8 @@ See `shows/demo.toml`.
 
 - [x] OSC feedback (`/lsp/state` push to subscribers) for remote UIs
 - [ ] Multichannel routing (cue → output bus matrix), per-cue patch
-- [ ] LTC / MTC chase + timecode cues
+- [x] Timecode cue triggers (MTC, Art-Net ArtTimeCode)
+- [ ] LTC input; chase (audio position follows timecode)
 - [x] Show load over OSC, hot reload of show file, file watcher
 - [x] Tauri UI: cue list, GO, progress, stop/panic over OSC
 - [x] Cue editing (add / update / delete / duplicate / move) over OSC + UI inspector

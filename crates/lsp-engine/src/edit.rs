@@ -71,6 +71,7 @@ const COMMON: &[&str] = &[
     "post_wait",
     "next",
     "second_trigger",
+    "timecode",
 ];
 
 fn type_keys(kind: &str) -> Option<&'static [&'static str]> {

@@ -45,6 +45,7 @@ const F = {
   next: ["next", "Continue", "seg", { span: 3, def: "do_nothing" }],
   type: ["type", "Type", "select", { span: 2 }],
   second_trigger: ["second_trigger", "If GO hits this cue while it is running", "seg", { span: 4, def: "ignore" }],
+  timecode: ["timecode", "Timecode (MTC / Art-Net)", "text", { span: 2, optional: true, placeholder: "HH:MM:SS:FF" }],
   curve: ["curve", "Fade curve", "seg", { span: 3, def: "s_curve" }],
 };
 
@@ -395,8 +396,11 @@ function field(f, d, idx) {
     el = document.createElement("input");
     el.spellcheck = false;
     el.value = v ?? "";
+    el.placeholder = o.placeholder ?? "";
     el.addEventListener("change", () => {
       if (key === "number" && el.value.trim() === "") return void (el.value = v ?? "");
+      if (o.optional && el.value.trim() === "") return commit(null);
+      if (o.optional) return commit(el.value.trim());
       commit(key === "number" ? el.value.trim() : el.value);
     });
   }
@@ -475,7 +479,7 @@ function renderInspector(force = false) {
     return;
   }
   const fields =
-    editor.tab === "basics" ? basicsFields(type) : editor.tab === "type" ? typeFields(type) : [F.second_trigger];
+    editor.tab === "basics" ? basicsFields(type) : editor.tab === "type" ? typeFields(type) : [F.second_trigger, F.timecode];
   for (const f of fields) {
     if (f === null) {
       body.append(document.createElement("div")); // keeps the design's grid rhythm

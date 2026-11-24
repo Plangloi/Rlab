@@ -104,6 +104,19 @@ struct EngineInfo {
 }
 
 #[derive(Serialize, Clone)]
+struct TimecodeInfo {
+    /// off | mtc | artnet
+    source: String,
+    /// off | waiting | rolling | stopped | error
+    status: String,
+    /// Last reading HH:MM:SS:FF ("" = none yet).
+    tc: String,
+    rate: String,
+    /// What the engine listens to, or why it can't.
+    message: String,
+}
+
+#[derive(Serialize, Clone)]
 struct StateInfo {
     standby: i32,
     running: Vec<Running>,
@@ -301,6 +314,16 @@ fn relay(app: &AppHandle, pkt: OscPacket) {
                 clips: arg_i(a.get(2)),
                 load: arg_f(a.get(3)),
                 subs: arg_i(a.get(4)),
+            },
+        ),
+        "/lsp/timecode" => app.emit(
+            "lsp:timecode",
+            TimecodeInfo {
+                source: arg_s(a.first()),
+                status: arg_s(a.get(1)),
+                tc: arg_s(a.get(2)),
+                rate: arg_s(a.get(3)),
+                message: arg_s(a.get(4)),
             },
         ),
         "/lsp/engine" => app.emit(

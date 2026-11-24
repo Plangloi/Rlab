@@ -4,6 +4,7 @@ mod feedback;
 mod loader;
 mod midi;
 mod osc;
+mod timecode;
 
 use anyhow::Result;
 use clap::Parser;
@@ -50,6 +51,7 @@ fn main() -> Result<()> {
     if args.list_devices {
         lsp_audio::list_devices()?;
         midi::list_ports()?;
+        timecode::list_ports()?;
         return Ok(());
     }
 
@@ -98,14 +100,13 @@ fn main() -> Result<()> {
                 }
             })?;
     }
-    drop(tx);
 
     // Initial load is synchronous so a broken show file fails at startup.
     let loaded = match &args.show {
         Some(p) => Some(loader::load(p, audio.sample_rate, &Default::default())?),
         None => None,
     };
-    let mut ctl = controller::Controller::new(loaded, audio, feedback_sock, !args.no_watch)?;
+    let mut ctl = controller::Controller::new(loaded, audio, feedback_sock, !args.no_watch, tx)?;
     ctl.run(rx);
     Ok(())
 }

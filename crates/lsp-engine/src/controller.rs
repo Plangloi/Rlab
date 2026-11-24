@@ -5,7 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use lsp_audio::{AudioCmd, AudioEvent, AudioHandle, Curve, VoiceId};
 use lsp_core::{
-    db_to_lin, AudioCue, Command, CueKind, FadeCurve, NextAction, SecondTrigger, Show,
+    db_to_lin, AudioCue, Command, CueKind, FadeCurve, NextAction, SecondTrigger, Show, TcFrame,
+    Timecode, TimecodeSource,
 };
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::edit;
 use crate::feedback::{self, ListMeta, RunInfo, Subscribers};
 use crate::loader::{self, ClipCache, LoadResult, Loaded};
-use crate::{midi::MidiOut, osc};
+use crate::{midi::MidiOut, osc, timecode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Action {
@@ -121,6 +122,20 @@ impl RunState {
     }
 }
 
+/// Incoming timecode (cue triggers).
+#[derive(Default)]
+struct TcIn {
+    listener: Option<timecode::Listener>,
+    /// Settings the listener was started with (None = never configured).
+    key: Option<(TimecodeSource, Option<String>, String)>,
+    /// What is being listened to, or why listening failed.
+    desc: String,
+    failed: bool,
+    /// Last reading, as a frame count at its rate.
+    last: Option<(i64, TcFrame)>,
+    seen: Option<Instant>,
+}
+
 pub struct Controller {
     show: Show,
     /// File the current show came from (None = started empty).
@@ -160,6 +175,9 @@ pub struct Controller {
     queued_load: Option<PathBuf>,
     load_tx: Sender<LoadResult>,
     load_rx: Receiver<LoadResult>,
+    /// For the timecode listener, which feeds the same command queue.
+    cmd_tx: Sender<Command>,
+    tc: TcIn,
 }
 
 const TICK: Duration = Duration::from_millis(5);
@@ -169,6 +187,8 @@ const PUSH_IDLE: Duration = Duration::from_secs(1);
 const WATCH_EVERY: Duration = Duration::from_millis(500);
 /// Hard stops still ramp this long to avoid a click.
 const HARD_STOP_FADE: f32 = 0.01;
+/// Timecode counts as rolling while readings arrive this often.
+const TC_ROLLING: Duration = Duration::from_millis(300);
 
 impl Controller {
     /// `loaded` = initial show (None → start empty and wait for `/lsp/load`).
@@ -177,6 +197,7 @@ impl Controller {
         audio: AudioHandle,
         feedback_sock: UdpSocket,
         watch: bool,
+        cmd_tx: Sender<Command>,
     ) -> Result<Self> {
         let (load_tx, load_rx) = crossbeam_channel::unbounded();
         let mut ctl = Self {
@@ -210,6 +231,8 @@ impl Controller {
             queued_load: None,
             load_tx,
             load_rx,
+            cmd_tx,
+            tc: TcIn::default(),
         };
         match loaded {
             Some(l) => ctl.apply_show(l),
@@ -230,8 +253,11 @@ impl Controller {
             match rx.recv_timeout(wait) {
                 Ok(Command::Quit) | Err(RecvTimeoutError::Disconnected) => break,
                 Ok(cmd) => {
+                    // Timecode arrives at frame rate; it only dirties the
+                    // state when it fires something.
+                    let quiet = matches!(cmd, Command::Timecode(_));
                     self.handle(cmd);
-                    self.dirty = true;
+                    self.dirty |= !quiet;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -358,7 +384,93 @@ impl Controller {
                     self.subs.send_to(a, feedback::edit_reply(body.to_string()));
                 }
             }
+            Command::Timecode(f) => self.on_timecode(f),
             Command::Quit => {}
+        }
+    }
+
+    // ── Timecode triggers ─────────────────────────────────
+
+    /// (Re)start the timecode listener when its settings changed, or retry
+    /// one that failed (e.g. the MIDI interface was plugged in since).
+    fn configure_timecode(&mut self) {
+        let s = &self.show.settings;
+        let key = (s.timecode, s.mtc_port.clone(), s.artnet_listen.clone());
+        if self.tc.key.as_ref() == Some(&key) && !self.tc.failed {
+            return;
+        }
+        // Drop the old listener first so a new one can bind the same port.
+        self.tc = TcIn::default();
+        match timecode::start(key.0, key.1.as_deref(), &key.2, self.cmd_tx.clone()) {
+            Ok(Some((l, desc))) => {
+                log::info!("timecode: listening for {desc}");
+                self.tc.listener = Some(l);
+                self.tc.desc = desc;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!("timecode: {e:#} — timecode triggers are off until the show is reloaded");
+                self.tc.desc = format!("{e:#}");
+                self.tc.failed = true;
+            }
+        }
+        self.tc.key = Some(key);
+    }
+
+    /// Fire every cue whose timecode was passed since the previous reading.
+    /// Only forward steps of up to one second fire: a stop, rewind or locate
+    /// (jump) moves the position without firing the cues it skipped.
+    fn on_timecode(&mut self, f: TcFrame) {
+        if self.tc.listener.is_none() {
+            return; // reading queued before the listener was replaced
+        }
+        let now = f.tc.to_frames(f.rate);
+        let prev = self.tc.last.filter(|(_, p)| p.rate == f.rate).map(|(n, _)| n);
+        self.tc.last = Some((now, f));
+        let was_rolling = self.tc_rolling();
+        self.tc.seen = Some(Instant::now());
+        if !was_rolling {
+            self.dirty = true; // show "rolling" right away
+        }
+        let Some(prev) = prev else { return };
+        let step = now - prev;
+        if step <= 0 || step > f.rate.nominal() as i64 {
+            if step != 0 {
+                log::info!("timecode: locate to {}", f.tc);
+            }
+            return;
+        }
+        let due: Vec<usize> = self
+            .show
+            .cues
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let t = Timecode::parse(c.timecode.as_deref()?)?.to_frames(f.rate);
+                (prev < t && t <= now).then_some(i)
+            })
+            .collect();
+        for idx in due {
+            log::info!("TC {} → {}", f.tc, self.label(idx));
+            self.trigger(idx);
+            self.dirty = true;
+        }
+        if self.dirty {
+            self.print_status();
+        }
+    }
+
+    fn tc_rolling(&self) -> bool {
+        self.tc.seen.is_some_and(|t| t.elapsed() < TC_ROLLING)
+    }
+
+    fn tc_status(&self) -> &'static str {
+        match self.tc.key.as_ref().map(|k| k.0) {
+            None | Some(TimecodeSource::Off) => "off",
+            _ if self.tc.failed => "error",
+            _ if self.tc.seen.is_none() => "waiting",
+            _ if self.tc_rolling() => "rolling",
+            _ => "stopped",
         }
     }
 
@@ -1045,6 +1157,7 @@ impl Controller {
         self.subs.broadcast_many(self.cue_list());
         self.subs
             .broadcast(feedback::load_status(status, &path, &message));
+        self.configure_timecode();
         self.print_status();
     }
 
@@ -1057,7 +1170,7 @@ impl Controller {
             self.dirty = false;
             return;
         }
-        let every = if self.states.is_empty() {
+        let every = if self.states.is_empty() && !self.tc_rolling() {
             PUSH_IDLE
         } else {
             PUSH_ACTIVE
@@ -1080,6 +1193,18 @@ impl Controller {
         self.subs.broadcast(feedback::state(standby, &running));
         let meters = self.audio.meters.take();
         self.subs.broadcast(feedback::meter(&meters, self.subs.len()));
+        let source = self.tc.key.as_ref().map_or("off", |k| k.0.as_str());
+        let (tc, rate) = match self.tc.last {
+            Some((_, f)) => (f.tc.to_string(), f.rate.as_str()),
+            None => (String::new(), ""),
+        };
+        self.subs.broadcast(feedback::timecode(
+            source,
+            self.tc_status(),
+            &tc,
+            rate,
+            &self.tc.desc,
+        ));
         self.last_push = Instant::now();
         self.dirty = false;
     }

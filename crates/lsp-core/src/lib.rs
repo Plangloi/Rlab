@@ -24,6 +24,135 @@ pub struct ShowSettings {
     pub audio_device: Option<String>,
     /// Fade time (s) applied by PANIC.
     pub panic_fade: f32,
+    /// Incoming timecode that fires cues with a `timecode` trigger.
+    pub timecode: TimecodeSource,
+    /// MTC: substring match against the MIDI input port name. None = first
+    /// port that is not a "Through" port.
+    pub mtc_port: Option<String>,
+    /// Art-Net: UDP bind address for ArtTimeCode packets.
+    pub artnet_listen: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimecodeSource {
+    #[default]
+    Off,
+    /// MIDI Time Code (quarter-frame + full-frame SysEx) on a MIDI input.
+    Mtc,
+    /// Art-Net ArtTimeCode (OpCode 0x9700) over UDP.
+    Artnet,
+}
+
+impl TimecodeSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TimecodeSource::Off => "off",
+            TimecodeSource::Mtc => "mtc",
+            TimecodeSource::Artnet => "artnet",
+        }
+    }
+}
+
+/// SMPTE frame rate, as carried by MTC and Art-Net (same 0..3 encoding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TcRate {
+    Fps24,
+    Fps25,
+    /// 29.97 drop-frame.
+    Df2997,
+    Fps30,
+}
+
+impl TcRate {
+    pub fn from_code(code: u8) -> Self {
+        match code & 3 {
+            0 => TcRate::Fps24,
+            1 => TcRate::Fps25,
+            2 => TcRate::Df2997,
+            _ => TcRate::Fps30,
+        }
+    }
+
+    /// Frames per timecode second (frame labels run 0..nominal).
+    pub fn nominal(self) -> u32 {
+        match self {
+            TcRate::Fps24 => 24,
+            TcRate::Fps25 => 25,
+            TcRate::Df2997 | TcRate::Fps30 => 30,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TcRate::Fps24 => "24",
+            TcRate::Fps25 => "25",
+            TcRate::Df2997 => "29.97df",
+            TcRate::Fps30 => "30",
+        }
+    }
+}
+
+/// A timecode label HH:MM:SS:FF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Timecode {
+    pub hours: u8,
+    pub minutes: u8,
+    pub seconds: u8,
+    pub frames: u8,
+}
+
+impl Timecode {
+    /// `HH:MM:SS:FF` (`;` or `.` also accepted before the frames).
+    pub fn parse(s: &str) -> Option<Self> {
+        let p: Vec<&str> = s.trim().split([':', ';', '.']).collect();
+        let [h, m, sec, f] = p.as_slice() else {
+            return None;
+        };
+        let n = |x: &str, max: u8| x.parse::<u8>().ok().filter(|v| *v < max);
+        Some(Self {
+            hours: n(h, 24)?,
+            minutes: n(m, 60)?,
+            seconds: n(sec, 60)?,
+            frames: n(f, 30)?,
+        })
+    }
+
+    /// Frame count since 00:00:00:00, counting labels at the nominal rate
+    /// (drop-frame labels are compared as labels, which is what triggers want).
+    pub fn to_frames(self, rate: TcRate) -> i64 {
+        let secs = (self.hours as i64 * 60 + self.minutes as i64) * 60 + self.seconds as i64;
+        secs * rate.nominal() as i64 + self.frames as i64
+    }
+
+    pub fn from_frames(frames: i64, rate: TcRate) -> Self {
+        let n = rate.nominal() as i64;
+        let f = frames.rem_euclid(24 * 3600 * n);
+        let secs = f / n;
+        Self {
+            hours: (secs / 3600) as u8,
+            minutes: (secs / 60 % 60) as u8,
+            seconds: (secs % 60) as u8,
+            frames: (f % n) as u8,
+        }
+    }
+}
+
+impl std::fmt::Display for Timecode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02}:{:02}:{:02}:{:02}",
+            self.hours, self.minutes, self.seconds, self.frames
+        )
+    }
+}
+
+/// One timecode reading from a source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcFrame {
+    pub tc: Timecode,
+    pub rate: TcRate,
 }
 
 impl Default for ShowSettings {
@@ -32,6 +161,9 @@ impl Default for ShowSettings {
             osc_listen: "0.0.0.0:53000".into(),
             audio_device: None,
             panic_fade: 1.0,
+            timecode: TimecodeSource::Off,
+            mtc_port: None,
+            artnet_listen: "0.0.0.0:6454".into(),
         }
     }
 }
@@ -52,6 +184,10 @@ pub struct Cue {
     /// What a trigger does while this cue is already running.
     #[serde(default)]
     pub second_trigger: SecondTrigger,
+    /// Fire this cue when incoming timecode (see `settings.timecode`) rolls
+    /// past this time, `HH:MM:SS:FF`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<String>,
     #[serde(flatten)]
     pub kind: CueKind,
 }
@@ -213,6 +349,8 @@ pub enum Command {
         name: String,
         reply: Option<SocketAddr>,
     },
+    /// A reading from the timecode listener.
+    Timecode(TcFrame),
     Quit,
 }
 
@@ -328,6 +466,11 @@ impl Show {
                     }
                     if !path.starts_with('/') {
                         p.push(format!("OSC path '{path}' must start with /"));
+                    }
+                }
+                if let Some(t) = &c.timecode {
+                    if Timecode::parse(t).is_none() {
+                        p.push(format!("timecode '{t}' is not HH:MM:SS:FF"));
                     }
                 }
                 (!p.is_empty()).then(|| p.join("; "))
@@ -480,6 +623,40 @@ type = "stop"
         assert_eq!(Command::parse("hs"), Some(Command::HardStop(None)));
         assert_eq!(Command::parse("pause 2"), Some(Command::Pause(Some("2".into()))));
         assert_eq!(Command::parse("resume"), Some(Command::Resume(None)));
+    }
+
+    #[test]
+    fn timecode_labels() {
+        let t = Timecode::parse("01:02:03:04").unwrap();
+        assert_eq!(t.to_string(), "01:02:03:04");
+        assert_eq!(t.to_frames(TcRate::Fps25), (3600 + 120 + 3) * 25 + 4);
+        assert_eq!(Timecode::from_frames(t.to_frames(TcRate::Fps25), TcRate::Fps25), t);
+        assert_eq!(Timecode::parse("00:00:10;29").unwrap().frames, 29);
+        assert!(Timecode::parse("00:61:00:00").is_none());
+        assert!(Timecode::parse("00:00:00").is_none());
+        let s: Show = toml::from_str(
+            r#"
+name = "t"
+[settings]
+timecode = "artnet"
+[[cue]]
+number = "1"
+type = "wait"
+duration = 1
+timecode = "00:00:05:00"
+[[cue]]
+number = "2"
+type = "wait"
+duration = 1
+timecode = "bad"
+"#,
+        )
+        .unwrap();
+        assert_eq!(s.settings.timecode, TimecodeSource::Artnet);
+        assert_eq!(s.settings.artnet_listen, "0.0.0.0:6454");
+        let p = s.cue_problems();
+        assert_eq!(p[0], None);
+        assert!(p[1].as_deref().unwrap().contains("timecode"));
     }
 
     #[test]
