@@ -93,6 +93,7 @@ cd ui/src-tauri && cargo run --release              # UI; --engine host:port or 
 
 - **Themes**: Standard, Underground, Pro — switch with **Theme** in the top bar (remembered per machine).
 - **Run mode**: GO with the standby cue and what it will do, cue list with live progress, Pause all, Stop all, Panic (twice = hard stop), per-cue pause / stop, click a cue to set standby.
+- **Timecode**: when the show has a timecode source, a large panel shows the incoming time and counts down to the next timecode cue (see **Timecode triggers**).
 - **Warnings**: broken cues are marked ⚠ with the reason; the standby line warns when GO will be ignored.
 - **Shows**: New… / Open… / Reload with load status. Open… sends the picked path to the engine, so it only works when the engine sees the same path (same machine or shared mount).
 - **Keys**: Space GO · Esc panic (twice = hard stop) · P pause / resume all · ↑↓ move standby · ⌘E edit · ⌘O open · ⌘R reload.
@@ -169,7 +170,7 @@ timecode = "01:00:12:10"    # HH:MM:SS:FF
 - **Locate**: a stop, rewind or jump of more than one second moves the position without firing the cues it skipped. Roll back before a cue to fire it again.
 - GO, stop and panic still work while timecode runs. To rehearse without timecode, set `timecode = "off"`.
 - The listener starts when a show loads and restarts when these settings change. If it fails (port in use, MIDI device missing), the error appears in the UI and log; reloading the show retries. `lsp --list-devices` lists MIDI inputs.
-- In the UI the **TC** readout in the top bar shows the incoming time (green while rolling). Cues with a trigger are tagged in the cue list, and the time is set in the inspector's **Triggers** tab.
+- In the UI a large **timecode panel** in the transport shows the incoming time, its state (green and pulsing while rolling, red with the reason on error), the source and frame rate, and a countdown to the next timecode cue (orange in the last 5 s). In edit mode a small **TC** readout in the top bar takes its place. Cues with a trigger are tagged `TC hh:mm:ss:ff` in the cue list, and the time is set in the inspector's **Triggers** tab (blank removes it).
 
 ## Cue types
 
